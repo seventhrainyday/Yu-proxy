@@ -326,12 +326,14 @@ button{font-family:inherit}
           <input id="f-q" placeholder="🔍 搜索 国家 / IP / ID…" oninput="renderNodes()">
           <select id="f-sort" onchange="renderNodes()">
             <option value="default">默认排序</option>
+            <option value="ipq">IP 质量优先</option>
             <option value="ping">延迟从低到高</option>
             <option value="score">评分从高到低</option>
             <option value="speed">带宽从高到低</option>
           </select>
           <label class="check"><input type="checkbox" id="f-hide-blocked" onchange="renderNodes()"> 隐藏已拉黑</label>
           <button class="btn mini" onclick="probeAll()">🔍 检测全部节点</button>
+          <button class="btn mini" onclick="ipQualityCheck()">🛡️ 检测 IP 质量</button>
           <span class="note" id="nodes-count"></span>
         </div>
       </div>
@@ -789,6 +791,10 @@ async function loadNodes(force) {
     renderNodes();
   } catch(e) { box.innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; }
 }
+const IQ_META = {
+  residential: ['🏠 住宅', 'ok'], mobile: ['📱 移动', ''],
+  datacenter: ['🏢 机房', 'warn'], proxy: ['🚩 代理标记', 'bad'],
+  unknown: ['❓ 未知', 'gray']};
 function nodeQuality(s) {
   if (s.blacklisted) return {cls:'bad', txt: s.blacklist_reason === 'manual' ? '已拉黑' : '临时拉黑'};
   if (s.custom) return {cls:'', txt:'📦 自定义'};
@@ -815,12 +821,20 @@ function renderNodes() {
   if (sort === 'ping') list = [...list].sort((a, b) => (a.ping || 1e9) - (b.ping || 1e9));
   else if (sort === 'score') list = [...list].sort((a, b) => b.score - a.score);
   else if (sort === 'speed') list = [...list].sort((a, b) => (b.speed_mbps || 0) - (a.speed_mbps || 0));
+  else if (sort === 'ipq') {
+    const rank = {residential: 0, mobile: 1, unknown: 2, datacenter: 3, proxy: 4};
+    list = [...list].sort((a, b) =>
+      (rank[(a.ip_quality || {}).ip_type] ?? 2) - (rank[(b.ip_quality || {}).ip_type] ?? 2));
+  }
   document.getElementById('nodes-count').textContent = '共 ' + list.length + ' 个';
   if (!list.length) { box.innerHTML = '<div class="empty">没有匹配的节点</div>'; return; }
   box.innerHTML = list.slice(0, 200).map(s => {
     const rate = s.success_rate == null ? '无记录' : Math.round(s.success_rate * 100) + '%';
     const ql = nodeQuality(s);
-    const badges = [`<span class="badge ${ql.cls}">${ql.txt}</span>`].join('');
+    const iq = s.ip_quality || {ip_type: 'unknown'};
+    const im = IQ_META[iq.ip_type] || IQ_META.unknown;
+    const badges = [`<span class="badge ${ql.cls}">${ql.txt}</span>`,
+      `<span class="badge ${im[1]}" title="${esc(iq.isp || '')} ${esc(iq.as || '')}">${im[0]}</span>`].join('');
     const actions = s.blacklisted && s.blacklist_reason === 'manual'
       ? `<button class="btn mini" onclick="unblockNode('${esc(s.id)}')">♻️ 解除拉黑</button>`
       : `<button class="btn mini primary" onclick="connectNode('${esc(s.id)}')">连接</button>` +
@@ -867,6 +881,15 @@ async function probeAll() {
     if (!r.ok) throw new Error(r.error || '启动失败');
     toast('全量探测已开始，完成后节点列表自动刷新', 'ok');
     setTimeout(() => loadNodes(true), 45000);
+  } catch(e) { toast('失败：' + e.message, 'err'); }
+}
+async function ipQualityCheck() {
+  if (!confirm('批量检测全部节点 IP 质量？（约需十几秒，后台执行）')) return;
+  try {
+    const r = await api('/api/ipquality', 'POST', {});
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    toast('IP 质量检测已开始，完成后节点列表自动刷新', 'ok');
+    setTimeout(() => loadNodes(true), 30000);
   } catch(e) { toast('失败：' + e.message, 'err'); }
 }
 async function blockNode(id) {
@@ -928,7 +951,9 @@ const SETTINGS = {
     ['filter.max_ping_ms','最大延迟（ms，0=不限）','number'],
     ['probe.threads','探测线程数（1-100，拉取后验证与全量检测共用）','number'],
     ['probe.full_check_interval_h','全量检测间隔（小时，0=关闭定时检测）','number'],
-    ['probe.expire_hours','节点过期时间（小时，长期不可用自动删除，0=不删除）','number']],
+    ['probe.expire_hours','节点过期时间（小时，长期不可用自动删除，0=不删除）','number'],
+    ['ipquality.enabled','启用 IP 质量检测（机房/住宅/代理标记识别）','checkbox'],
+    ['ipquality.cache_days','IP 质量缓存天数（0=每次都重查）','number']],
   'sched-policy': [['scheduler.mode','调度模式','select',[['failover','主备模式'],['rotate','定时轮询'],['random','权重随机']]],
     ['scheduler.rotate_interval_min','轮询间隔（分钟）','number'],
     ['scheduler.force_rotation_h','强制换出口 IP（小时，0=关闭）','number'],
@@ -1412,6 +1437,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["probe"](body.get("id")))
             elif path == "/api/probe_all":
                 self._json(self.hooks["probe_all"]())
+            elif path == "/api/ipquality":
+                self._json(self.hooks["ipquality"](body))
             elif path == "/api/rotate_now":
                 self._json(self.hooks["rotate_now"]())
             elif path == "/api/killswitch":

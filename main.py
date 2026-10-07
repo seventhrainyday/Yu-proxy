@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
 from health import HealthChecker
+import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
 from notify import Notifier
@@ -44,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -81,6 +82,10 @@ def default_config() -> dict:
             "threads": 20,
             "full_check_interval_h": 24,
             "expire_hours": 72,
+        },
+        "ipquality": {
+            "enabled": True,
+            "cache_days": 7,
         },
         "filter": {
             "countries_allow": [],
@@ -205,6 +210,9 @@ def validate_config(cfg: dict) -> str | None:
             return "probe.full_check_interval_h 非法"
         if float(pb.get("expire_hours", 72)) < 0:
             return "probe.expire_hours 非法"
+        iq = cfg.get("ipquality", {})
+        if float(iq.get("cache_days", 7)) < 0:
+            return "ipquality.cache_days 非法"
         if float(cfg["vpngate"].get("refresh_interval_h", 6)) < 1:
             return "vpngate.refresh_interval_h 不能小于 1 小时"
         if not isinstance(cfg["killswitch"].get("allow_hosts"), list):
@@ -303,6 +311,8 @@ class Daemon:
 
         # 节点统计与黑名单
         self.store = NodeStore(self.data_dir / "nodes.json")
+        self.iq_cache = ipquality.IPQualityCache(
+            self.data_dir / "ip_quality.json")
         # 事件日志（连接/切换/故障），内存 + 落盘
         self._events: deque = deque(maxlen=200)
         self._load_events()
@@ -474,6 +484,7 @@ class Daemon:
             "resume": self._hook_resume,
             "probe": self._hook_probe,
             "probe_all": self._hook_probe_all,
+            "ipquality": self._hook_ipquality,
             "rotate_now": self._hook_rotate_now,
             "killswitch": self._hook_killswitch,
             "notify_test": self._hook_notify_test,
@@ -528,6 +539,18 @@ class Daemon:
             },
         }
 
+    def _ip_quality_of(self, ip: str) -> dict:
+        """取某 IP 的质量信息（缓存），前端展示用。"""
+        if not ip:
+            return {"ip_type": "unknown"}
+        ttl = float(self.cfg.get("ipquality", {}).get("cache_days", 7))
+        e = self.iq_cache.get(ip, ttl)
+        if not e:
+            return {"ip_type": "unknown"}
+        return {"ip_type": e.get("ip_type", "unknown"),
+                "isp": e.get("isp", ""), "org": e.get("org", ""),
+                "as": e.get("as", "")}
+
     def _hook_servers(self) -> dict:
         servers = self._all_servers()
         vpn_cfg = self.cfg["vpn"]
@@ -555,6 +578,7 @@ class Daemon:
                 "last_probe": s.get("last_probe") or 0,
                 "last_probe_ok": s.get("last_probe_ok") or 0,
                 "first_seen": s.get("first_seen") or 0,
+                "ip_quality": self._ip_quality_of(s.get("ip", "")),
             })
         return {"ok": True, "servers": out,
                 "blocked": self.store.blocked_list()}
@@ -662,6 +686,45 @@ class Daemon:
                     "expired": expired}
         finally:
             self._probing = False
+
+    def _run_ipquality_check(self, ips: list[str] | None = None) -> dict:
+        """批量检测 IP 质量（后台线程调用）。ips 为 None 时检测全部缓存节点。"""
+        if not self.cfg.get("ipquality", {}).get("enabled", True):
+            return {"ok": False, "error": "IP 质量检测已关闭"}
+        if getattr(self, "_iq_checking", False):
+            return {"ok": False, "error": "已有检测任务在运行"}
+        self._iq_checking = True
+        try:
+            ttl = float(self.cfg.get("ipquality", {}).get("cache_days", 7))
+            if ips is None:
+                servers, _ = vpngate.load_cache(self.data_dir)
+                ips = [s["ip"] for s in servers if s.get("ip")]
+            # 只查缓存过期/缺失的
+            todo = [ip for ip in ips if not self.iq_cache.get(ip, ttl)]
+            if not todo:
+                return {"ok": True, "checked": 0, "cached": len(ips)}
+            self.log(f"[ipquality] 开始检测 {len(todo)} 个 IP…")
+            infos = ipquality.batch_check(todo, log=self.log)
+            self.iq_cache.update(infos)
+            self.iq_cache.prune()
+            ok_n = sum(1 for i in infos.values()
+                       if i.get("status") == "success")
+            self.log(f"[ipquality] 完成：{ok_n}/{len(todo)} 个成功")
+            self._event("ipquality", f"IP 质量检测完成：{ok_n} 个")
+            return {"ok": True, "checked": ok_n, "cached": len(ips) - len(todo)}
+        finally:
+            self._iq_checking = False
+
+    def _hook_ipquality(self, body: dict | None) -> dict:
+        """手动触发 IP 质量检测（后台执行）。body 可含 {ip} 只查单个。"""
+        ip = (body or {}).get("ip")
+        if getattr(self, "_iq_checking", False):
+            return {"ok": False, "error": "已有检测任务在运行"}
+        threading.Thread(
+            target=self._run_ipquality_check,
+            args=([ip] if ip else None,), daemon=True,
+            name="ipquality").start()
+        return {"ok": True, "msg": "IP 质量检测已开始"}
 
     def _probe_loop(self) -> None:
         """按 probe.full_check_interval_h 定时全量探测所有节点。"""
@@ -1197,6 +1260,10 @@ class Daemon:
                     threading.Thread(
                         target=self._run_probe_batch, daemon=True,
                         name="probe-fetch").start()
+                    # 拉取后顺带检测 IP 质量（后台线程，不阻塞）
+                    threading.Thread(
+                        target=self._run_ipquality_check, daemon=True,
+                        name="iq-fetch").start()
                 except Exception as e:
                     self.log(f"[refetch] 刷新失败: {e}")
 
