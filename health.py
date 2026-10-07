@@ -13,8 +13,8 @@ import urllib.request
 
 # 真实连通性探测站：一个要 204、一个回显出口 IP
 PROBE_URLS = [
-    "https://www.gstatic.com/generate_204",
     "http://cdn.cloudflare.com/cdn-cgi/trace",
+    "https://www.gstatic.com/generate_204",
 ]
 
 
@@ -86,6 +86,8 @@ def http_probe(proxy: str, urls: list[str] | None = None,
                 if line.startswith("ip="):
                     exit_ip = line[3:].strip()
                     break
+            # 注：generate_204 这类探测站不返回 IP，exit_ip 为空时
+            # 前端显示 "-"，不影响连通性判定
             risk = False
             if risk_detect:
                 low = body.lower()

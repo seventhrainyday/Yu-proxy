@@ -551,7 +551,7 @@ async function loadStatus() {
     document.getElementById('st-paused').style.display = s.scheduler.paused ? '' : 'none';
     document.getElementById('btn-pause').textContent = s.scheduler.paused ? '▶ 恢复自动切换' : '⏸ 暂停自动切换';
     document.getElementById('st-node').textContent = c && v.country_zh ? v.country_zh + ' ' + (v.server_ip || '') : '-';
-    document.getElementById('st-ip').textContent = s.exit_ip || v.tun_ip || '-';
+    document.getElementById('st-ip').textContent = s.exit_ip || '-';
     const hms = s.health && s.health.layers && s.health.layers.tcp && s.health.layers.tcp.ms;
     document.getElementById('st-ping').textContent = hms != null ? hms + ' ms' : '-';
     document.getElementById('st-uptime').textContent = c ? fmtDur(v.uptime_s) : '-';
