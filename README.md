@@ -17,7 +17,7 @@ OpenVPN 隧道 + HTTP/SOCKS5 二合一出口 + Web 管理面板，
 
 ## ✨ 特性
 
-- **节点管理** — 从 VPNGate 官方 API 定时拉取近百个免费节点（国家 / 延迟 / 评分 / 速度 / 在线人数），本地缓存，可按国家偏好排序；支持多源容错与自定义抓取间隔
+- **节点管理** — 从 VPNGate 官方 API 定时拉取近百个免费节点（国家 / 延迟 / 评分 / 速度 / 在线人数），本地累积缓存（新拉取的追加，旧的不删）；拉取后自动多线程验证有效性，也可定时/手动全量检测；长期不可用的节点自动清理
 - **一键连接最优** — 按偏好国家 → 延迟 → 评分自动挑节点，失败自动顺延试下几个；也可在面板里点任意节点连接、测速、拉黑
 - **三合一代理出口** — HTTP、HTTPS（CONNECT）、SOCKS5 同一个端口，可选账号密码认证 + 来源 IP 白名单
 - **调度策略** — 主备 / 定时轮询 / 权重随机三种模式，可强制每 X 小时换出口 IP
@@ -131,6 +131,7 @@ python3 main.py status                 # 查看状态
 | POST | `/api/exit_add` `{"port"}` | 新增出口（独立代理端口） |
 | POST | `/api/exit_start` `/api/exit_stop` `/api/exit_delete` `{"id"}` | 启停/删除出口 |
 | POST | `/api/probe` `{"id"}` | 探测指定节点 |
+| POST | `/api/probe_all` | 全量探测所有节点（后台执行） |
 | POST | `/api/blacklist_add` `/api/blacklist_remove` `{"id"}` | 拉黑/解除 |
 | POST | `/api/blacklist_clear` | 清空全部黑名单 |
 | POST | `/api/log_clear` | 清空系统日志 |
@@ -155,6 +156,9 @@ curl -b cj.txt -X POST "http://127.0.0.1:52051/api/rotate_now"
 | `panel.bind` / `panel.port` | `0.0.0.0` / `52051` | 面板监听地址与端口 |
 | `panel.user` | `admin` | 面板登录用户名 |
 | `panel.pass` | `admin` | 面板登录密码 |
+| `probe.threads` | `20` | 批量探测线程数（1-100，拉取后验证与全量检测共用） |
+| `probe.full_check_interval_h` | `24` | 全量检测间隔（小时，0=关闭） |
+| `probe.expire_hours` | `72` | 节点过期时间（小时，长期不可用自动删除，0=不删除） |
 | `proxy.bind` / `proxy.port` | `0.0.0.0` / `52052` | 代理监听地址与端口 |
 | `proxy.user` / `proxy.pass` | 空 | 留空=不认证；填写后 HTTP Basic 与 SOCKS5 均要求认证 |
 | `proxy.dns_server` | `8.8.8.8` | 经隧道解析 DNS 用的上游 |
@@ -264,4 +268,5 @@ GPL-3.0，见 [LICENSE](LICENSE)。
 - **v1.3.1** — 取消 token 鉴权，改账号密码登录（默认 admin/admin，首次登录后请修改）；修复设置页开关被拉成横条的样式 bug；CLI 改用账号密码登录面板
 - **v1.3.2** — 修复从 token 版升级后 admin/admin 登录失败（老配置 user/pass 为空字符串时自动重置为 admin/admin）
 - **v1.3.3** — 修复仪表盘两处显示错误：出口节点名（后端键名 country→country_zh）、出口 IP（探测站排序 + 不再用隧道内网 IP 冒充）
+- **v1.3.4** — 节点累积存储（拉取不再覆盖旧节点）；拉取后自动多线程验证全部节点有效性；新增定时全量检测 + 手动「检测全部节点」按钮；新增 probe.threads / probe.full_check_interval_h / probe.expire_hours 设置；长期不可用节点自动删除
 - **v1.3.0** — UI 按规划重做为磨砂极简风 + 固定侧边栏；面板加一键更新；新增最大延迟过滤、风控检测（403/验证码自动切换）、黑名单清空、日志清空、配置导入导出

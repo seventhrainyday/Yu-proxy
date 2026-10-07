@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
-from health import HealthChecker, tcp_ping
+from health import HealthChecker
 from killswitch import KillSwitch
 from nodestore import NodeStore
 from notify import Notifier
@@ -44,7 +44,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -76,6 +76,11 @@ def default_config() -> dict:
         "vpngate": {
             "api_urls": ["https://www.vpngate.net/api/iphone/"],
             "refresh_interval_h": 6,
+        },
+        "probe": {
+            "threads": 20,
+            "full_check_interval_h": 24,
+            "expire_hours": 72,
         },
         "filter": {
             "countries_allow": [],
@@ -193,6 +198,13 @@ def validate_config(cfg: dict) -> str | None:
         if not isinstance(cfg["vpngate"].get("api_urls"), list) or \
                 not cfg["vpngate"]["api_urls"]:
             return "vpngate.api_urls 不能为空"
+        pb = cfg.get("probe", {})
+        if not 1 <= int(pb.get("threads", 20)) <= 100:
+            return "probe.threads 须在 1-100 之间"
+        if float(pb.get("full_check_interval_h", 24)) < 0:
+            return "probe.full_check_interval_h 非法"
+        if float(pb.get("expire_hours", 72)) < 0:
+            return "probe.expire_hours 非法"
         if float(cfg["vpngate"].get("refresh_interval_h", 6)) < 1:
             return "vpngate.refresh_interval_h 不能小于 1 小时"
         if not isinstance(cfg["killswitch"].get("allow_hosts"), list):
@@ -461,6 +473,7 @@ class Daemon:
             "pause": self._hook_pause,
             "resume": self._hook_resume,
             "probe": self._hook_probe,
+            "probe_all": self._hook_probe_all,
             "rotate_now": self._hook_rotate_now,
             "killswitch": self._hook_killswitch,
             "notify_test": self._hook_notify_test,
@@ -539,6 +552,9 @@ class Daemon:
                 "success_rate": st["success_rate"],
                 "blacklisted": st["blacklisted"],
                 "blacklist_reason": st["blacklist_reason"],
+                "last_probe": s.get("last_probe") or 0,
+                "last_probe_ok": s.get("last_probe_ok") or 0,
+                "first_seen": s.get("first_seen") or 0,
             })
         return {"ok": True, "servers": out,
                 "blocked": self.store.blocked_list()}
@@ -586,20 +602,84 @@ class Daemon:
         server = self._find_server(server_id) if server_id else None
         if server is None:
             return {"ok": False, "error": "找不到节点"}
-        ms = tcp_ping(server["ip"], 443, timeout=5)
-        if ms is None:
-            # 有些节点只开 UDP/其他端口，再试配置里解析出的端口
-            try:
-                r = vpngate.detect_remote(server["config_b64"],
-                                          server["ip"])
-                if r["port"] != 443:
-                    ms = tcp_ping(r["host"] or server["ip"],
-                                  r["port"], timeout=5)
-            except Exception as e:
-                self.log(f"[probe] 解析节点端口失败: {e}")
-        if ms is None:
+        r = vpngate.probe_one(server)
+        if not r["ok"]:
             return {"ok": False, "error": "TCP 探测超时"}
-        return {"ok": True, "ms": round(ms * 1000, 1)}
+        return {"ok": True, "ms": r["ms"]}
+
+    def _hook_probe_all(self) -> dict:
+        """手动触发全量节点探测（后台线程执行，立即返回）。"""
+        if getattr(self, "_probing", False):
+            return {"ok": False, "error": "已有探测任务在运行"}
+        threading.Thread(target=self._run_probe_batch, daemon=True,
+                         name="probe-all").start()
+        return {"ok": True, "msg": "全量探测已开始，结果稍后更新"}
+
+    def _run_probe_batch(self, servers: list[dict] | None = None) -> dict:
+        """批量探测节点有效性，更新 last_probe/last_probe_ok，执行过期删除。
+
+        servers 为 None 时探测全部缓存节点。返回 {total, ok, expired}。
+        """
+        if getattr(self, "_probing", False):
+            return {"ok": False, "error": "已有探测任务在运行"}
+        self._probing = True
+        try:
+            pcfg = self.cfg.get("probe", {})
+            threads = int(pcfg.get("threads", 20))
+            if servers is None:
+                servers, _ = vpngate.load_cache(self.data_dir)
+            # 手动拉黑的不测；当前连接的不删（但照常探测更新状态）
+            cur_id = self.controller.current_server_id()
+            skip_ids = {s["id"] for s in servers
+                        if self.store.is_blacklisted(s["id"])[0] == "manual"}
+            results = vpngate.probe_batch(
+                servers, threads=threads,
+                skip=lambda s: s["id"] in skip_ids)
+            now = time.time()
+            by_id = {s["id"]: s for s in servers}
+            ok_n = 0
+            for sid, r in results.items():
+                s = by_id.get(sid)
+                if s is None:
+                    continue
+                s["last_probe"] = now
+                if r["ok"]:
+                    s["last_probe_ok"] = now
+                    ok_n += 1
+            # 过期删除（当前连接的节点永不删除）
+            before = len(servers)
+            servers = [s for s in vpngate.expire_nodes(
+                servers, float(pcfg.get("expire_hours", 72)))
+                if s["id"] != cur_id]
+            vpngate.save_cache(servers, self.data_dir)
+            expired = before - len(servers)
+            self.log(f"[probe] 批量探测完成：{len(results)} 个，"
+                     f"可用 {ok_n} 个，过期删除 {expired} 个")
+            self._event("probe",
+                        f"节点探测完成：{len(results)} 个中 {ok_n} 个可用"
+                        + (f"，清理 {expired} 个过期节点" if expired else ""))
+            return {"ok": True, "total": len(results), "usable": ok_n,
+                    "expired": expired}
+        finally:
+            self._probing = False
+
+    def _probe_loop(self) -> None:
+        """按 probe.full_check_interval_h 定时全量探测所有节点。"""
+        while not self._stop_event.wait(3600):
+            try:
+                hours = float(self.cfg.get("probe", {})
+                              .get("full_check_interval_h", 24))
+            except (TypeError, ValueError):
+                hours = 24
+            if hours <= 0:
+                continue
+            self._probe_acc = getattr(self, "_probe_acc", 0) + 1
+            if self._probe_acc >= hours:
+                self._probe_acc = 0
+                try:
+                    self._run_probe_batch()
+                except Exception as e:
+                    self.log(f"[probe] 定时全量探测失败: {e}")
 
     def _hook_rotate_now(self) -> dict:
         """手动立即切换节点（仪表盘快捷按钮）。"""
@@ -1113,6 +1193,10 @@ class Daemon:
                     self.log(f"[refetch] 节点列表已更新，共 {len(servers)} 个")
                     self._event("refresh",
                                 f"节点列表已更新，共 {len(servers)} 个")
+                    # 拉取后立即批量验证有效性（后台线程，不阻塞）
+                    threading.Thread(
+                        target=self._run_probe_batch, daemon=True,
+                        name="probe-fetch").start()
                 except Exception as e:
                     self.log(f"[refetch] 刷新失败: {e}")
 
@@ -1165,6 +1249,9 @@ class Daemon:
         # 定时刷新节点列表
         threading.Thread(target=self._refetch_loop, daemon=True,
                          name="refetch").start()
+        # 定时全量探测节点有效性
+        threading.Thread(target=self._probe_loop, daemon=True,
+                         name="probetimer").start()
         # 网速采样
         threading.Thread(target=self._throughput_loop, daemon=True,
                          name="throughput").start()

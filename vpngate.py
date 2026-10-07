@@ -12,8 +12,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import socket
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
@@ -201,17 +203,111 @@ def load_cache(data_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
 
 def refresh(data_dir: str | Path,
             urls: list[str] | None = None) -> list[dict[str, Any]]:
-    """按顺序尝试多个源（官网→镜像），拉取最新列表并写入缓存。"""
+    """按顺序尝试多个源（官网→镜像），拉取最新列表并**累积合并**入缓存。
+
+    已存在的节点保留 first_seen / last_probe_ok 等元数据，只更新
+    VPNGate 下发的新鲜数据（延迟/带宽/评分等）；新节点追加。旧节点不删除，
+    过期清理另由 expire_nodes() 按 probe.expire_hours 执行。
+    """
     urls = urls or [API_URL]
     last_err: Exception | None = None
     for url in urls:
         try:
-            servers = parse_servers(fetch_csv(url))
-            save_cache(servers, data_dir)
-            return servers
+            new_servers = parse_servers(fetch_csv(url))
+            merged = merge_servers(load_cache(data_dir)[0], new_servers)
+            save_cache(merged, data_dir)
+            return merged
         except Exception as e:
             last_err = e
     raise RuntimeError(f"所有节点源都拉取失败: {last_err}")
+
+
+def merge_servers(existing: list[dict[str, Any]],
+                  new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """累积合并：new 中的节点更新/追加到 existing，返回合并后的列表。"""
+    now = time.time()
+    by_id: dict[str, dict[str, Any]] = {s["id"]: s for s in existing}
+    for s in new:
+        old = by_id.get(s["id"])
+        if old is not None:
+            # 保留我方元数据，更新官方新鲜数据
+            for k in ("first_seen", "last_probe", "last_probe_ok"):
+                if k in old:
+                    s[k] = old[k]
+            s["last_seen"] = now
+            by_id[s["id"]] = s
+        else:
+            s["first_seen"] = now
+            s["last_seen"] = now
+            s["last_probe"] = 0
+            s["last_probe_ok"] = 0
+            by_id[s["id"]] = s
+    return list(by_id.values())
+
+
+def expire_nodes(servers: list[dict[str, Any]],
+                 expire_hours: float) -> list[dict[str, Any]]:
+    """删除长期不可用的节点：(last_probe_ok or first_seen) 距今超过 expire_hours。
+
+    expire_hours <= 0 表示不启用过期删除。
+    """
+    if expire_hours <= 0:
+        return servers
+    now = time.time()
+    cutoff = expire_hours * 3600
+    kept = []
+    for s in servers:
+        baseline = s.get("last_probe_ok") or s.get("first_seen") or now
+        if now - baseline <= cutoff:
+            kept.append(s)
+    return kept
+
+
+def probe_one(server: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    """TCP 握手探测单个节点是否有效。返回 {ok, ms}。"""
+    ip = server.get("ip", "")
+    # 先试 443，不通则解析配置里的实际端口
+    ports = [443]
+    try:
+        r = detect_remote(server.get("config_b64", ""), ip)
+        if r.get("port") and r["port"] not in ports:
+            ports.append(r["port"])
+    except Exception:
+        pass
+    host = ip
+    for port in ports:
+        try:
+            t0 = time.monotonic()
+            with socket.create_connection((host, port), timeout=timeout):
+                pass
+            return {"ok": True, "ms": round((time.monotonic() - t0) * 1000, 1)}
+        except Exception:
+            continue
+    return {"ok": False, "ms": None}
+
+
+def probe_batch(servers: list[dict[str, Any]], threads: int = 20,
+                timeout: float = 5.0,
+                skip: Callable[[dict[str, Any]], bool] | None = None
+                ) -> dict[str, dict[str, Any]]:
+    """多线程批量探测节点有效性。返回 {id: {ok, ms}}。
+
+    skip(server) 返回 True 则跳过该节点（如手动拉黑的不测）。
+    """
+    threads = max(1, min(100, int(threads or 20)))
+    targets = [s for s in servers if not (skip and skip(s))]
+    results: dict[str, dict[str, Any]] = {}
+    if not targets:
+        return results
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        futs = {ex.submit(probe_one, s, timeout): s for s in targets}
+        for fut in as_completed(futs):
+            s = futs[fut]
+            try:
+                results[s["id"]] = fut.result()
+            except Exception:
+                results[s["id"]] = {"ok": False, "ms": None}
+    return results
 
 
 def filter_servers(

@@ -331,6 +331,7 @@ button{font-family:inherit}
             <option value="speed">带宽从高到低</option>
           </select>
           <label class="check"><input type="checkbox" id="f-hide-blocked" onchange="renderNodes()"> 隐藏已拉黑</label>
+          <button class="btn mini" onclick="probeAll()">🔍 检测全部节点</button>
           <span class="note" id="nodes-count"></span>
         </div>
       </div>
@@ -795,6 +796,12 @@ function nodeQuality(s) {
   if (s.score >= 400) return {cls:'', txt:'良好'};
   return {cls:'gray', txt:'一般'};
 }
+function probeStatus(s) {
+  if (!s.last_probe) return '<span style="color:var(--muted)">未探测</span>';
+  if (s.last_probe_ok && s.last_probe_ok >= s.last_probe - 1)
+    return '<span style="color:var(--green)">可用</span>';
+  return '<span style="color:var(--red)">不可用</span>';
+}
 function renderNodes() {
   const box = document.getElementById('nodes');
   const q = document.getElementById('f-q').value.trim().toLowerCase();
@@ -830,6 +837,7 @@ function renderNodes() {
       `<span>评分 <b>${s.score}</b></span>` +
       `<span>在线 <b>${esc(s.uptime_h)}</b></span>` +
       `<span>成功率 <b>${rate}</b></span>` +
+      `<span>探测 <b>${probeStatus(s)}</b></span>` +
       `<span class="probe-res"></span></div>` +
       `<div class="node-actions">${actions}</div></div>`;
   }).join('');
@@ -851,6 +859,15 @@ async function probeNode(btn, id) {
     else el.innerHTML = '<b style="color:var(--red)">不通</b>';
   } catch(e) { toast('测速失败', 'err'); }
   btn.disabled = false; btn.textContent = '测速';
+}
+async function probeAll() {
+  if (!confirm('对全部节点做 TCP 有效性探测？（约需几十秒，后台执行）')) return;
+  try {
+    const r = await api('/api/probe_all', 'POST', {});
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    toast('全量探测已开始，完成后节点列表自动刷新', 'ok');
+    setTimeout(() => loadNodes(true), 45000);
+  } catch(e) { toast('失败：' + e.message, 'err'); }
 }
 async function blockNode(id) {
   if (!confirm('拉黑该节点 30 天？')) return;
@@ -908,7 +925,10 @@ const SETTINGS = {
   'sched-filter': [['filter.countries_allow','国家白名单（逗号分隔，空=不限）','text'],
     ['filter.countries_block','国家黑名单（逗号分隔）','text'],
     ['filter.min_bandwidth_mbps','最低带宽（Mbps，0=不限）','number'],
-    ['filter.max_ping_ms','最大延迟（ms，0=不限）','number']],
+    ['filter.max_ping_ms','最大延迟（ms，0=不限）','number'],
+    ['probe.threads','探测线程数（1-100，拉取后验证与全量检测共用）','number'],
+    ['probe.full_check_interval_h','全量检测间隔（小时，0=关闭定时检测）','number'],
+    ['probe.expire_hours','节点过期时间（小时，长期不可用自动删除，0=不删除）','number']],
   'sched-policy': [['scheduler.mode','调度模式','select',[['failover','主备模式'],['rotate','定时轮询'],['random','权重随机']]],
     ['scheduler.rotate_interval_min','轮询间隔（分钟）','number'],
     ['scheduler.force_rotation_h','强制换出口 IP（小时，0=关闭）','number'],
@@ -947,7 +967,7 @@ const SETTINGS = {
     ['notify.events.recover','连接恢复时通知','checkbox']],
 };
 const LIST_FIELDS = ['filter.countries_allow','filter.countries_block','proxy.allow_ips','killswitch.allow_hosts'];
-const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h',
+const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads',
   'filter.min_bandwidth_mbps','filter.max_ping_ms','scheduler.rotate_interval_min',
   'watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries',
   'notify.email.smtp_port'];
@@ -1390,6 +1410,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["resume"]())
             elif path == "/api/probe":
                 self._json(self.hooks["probe"](body.get("id")))
+            elif path == "/api/probe_all":
+                self._json(self.hooks["probe_all"]())
             elif path == "/api/rotate_now":
                 self._json(self.hooks["rotate_now"]())
             elif path == "/api/killswitch":

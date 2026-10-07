@@ -83,5 +83,10 @@
       "fail": true,
       "recover": true
     }
+  },
+  "probe": {
+    "threads": 20,
+    "full_check_interval_h": 24,
+    "expire_hours": 72
   }
 }
