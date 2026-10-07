@@ -4,8 +4,7 @@
 panel.py — Web 管理面板
 
 单文件实现：http.server + 内嵌前端页面，无第三方依赖。
-访问需要 token（首次运行时自动生成，见 config.json），
-可经 URL 参数 ?token=xxx 或请求头 X-Token 传递。
+账号密码登录（会话 cookie），默认账号密码均为 admin，首次登录后请修改。
 """
 from __future__ import annotations
 
@@ -138,6 +137,7 @@ button{font-family:inherit}
 .f-hint{font-size:11px;color:var(--red);margin:-6px 0 10px 222px;display:none}
 /* 开关 */
 .switch{position:relative;width:46px;height:26px;flex-shrink:0;cursor:pointer}
+.f-row label.switch{width:46px;flex-shrink:0}
 .switch input{display:none}
 .switch .tr{position:absolute;inset:0;background:rgba(148,163,184,.35);border-radius:999px;transition:.2s}
 .switch .tr::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;
@@ -427,9 +427,8 @@ button{font-family:inherit}
 </div>
 <div id="toast"></div>
 <script>
-const token = new URLSearchParams(location.search).get('token') || '';
 async function api(path, method, body) {
-  const url = path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+  const url = path;
   const opt = {method: method || 'GET', headers: {}};
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const r = await fetch(url, opt);
@@ -930,7 +929,7 @@ const SETTINGS = {
     ['panel.port','监听端口','number'],
     ['panel.user','登录用户名（空=不启用登录）','text'],
     ['panel.pass','登录密码','password'],
-    ['panel.token','访问 Token','text','regen']],
+    ['panel.pass2','确认密码（修改时填写）','password']],
   'notify': [['notify.telegram.enabled','Telegram 启用','checkbox'],
     ['notify.telegram.bot_token','Telegram Bot Token','text'],
     ['notify.telegram.chat_id','Telegram Chat ID','text'],
@@ -990,20 +989,19 @@ async function openSettingsPage(page) {
     }).join('');
   } catch(e) { toast('读取设置失败：' + e.message, 'err'); }
 }
-function regenToken() {
-  const bytes = new Uint8Array(24); crypto.getRandomValues(bytes);
-  let t = '';
-  btoa(String.fromCharCode.apply(null, bytes)).split('').forEach(ch => {
-    if (/[a-zA-Z0-9]/.test(ch)) t += ch;
-  });
-  document.getElementById(fieldId('panel.token')).value = t.slice(0, 32);
-}
 async function saveSettingsPage(page) {
   const card = document.querySelector(`.settings-form[data-sp="${page}"]`).closest('.card');
   const msg = card.querySelector('[data-msg]');
   try {
+    // 面板安全页：确认密码校验
+    if (page === 'sec-panel') {
+      const p1 = document.getElementById(fieldId('panel.pass')).value;
+      const p2 = document.getElementById(fieldId('panel.pass2')).value;
+      if (p2 && p1 !== p2) throw new Error('两次输入的密码不一致');
+    }
     SETTINGS[page].forEach(f => {
       const [path, , type] = f;
+      if (path === 'panel.pass2') return; // 确认密码不存配置
       const el = document.getElementById(fieldId(path));
       let v = type === 'checkbox' ? el.checked : el.value.trim();
       if (LIST_FIELDS.includes(path)) v = v ? v.split(',').map(s => s.trim()).filter(s => s) : [];
@@ -1052,7 +1050,7 @@ async function loadBlacklist() {
 
 /* ---------- 配置导入导出 ---------- */
 function exportConfig() {
-  window.open('/api/config_export?token=' + encodeURIComponent(token), '_blank');
+  window.open('/api/config_export', '_blank');
 }
 async function importConfig(input) {
   const f = input.files[0]; if (!f) return;
@@ -1212,7 +1210,6 @@ class PanelHandler(BaseHTTPRequestHandler):
     server_version = "Yu-proxy-panel/1.0"
 
     # 由 PanelServer 注入
-    token: str = ""
     hooks: dict = {}
     panel_server = None  # PanelServer 实例
 
@@ -1230,19 +1227,8 @@ class PanelHandler(BaseHTTPRequestHandler):
         return None
 
     def _authed(self) -> bool:
-        # 1. 登录会话 cookie
-        if self.panel_server.valid_session(self._session_id()):
-            return True
-        # 2. API token（请求头或 URL 参数，兼容 CLI）
-        if self.headers.get("X-Token") and \
-                secrets.compare_digest(self.headers.get("X-Token"),
-                                       self.token):
-            return True
-        qs = urllib.parse.urlparse(self.path).query
-        params = urllib.parse.parse_qs(qs)
-        qtoken = params.get("token", [""])[0]
-        return bool(self.token) and qtoken and \
-            secrets.compare_digest(qtoken, self.token)
+        # 仅认登录会话 cookie（token 鉴权已取消，统一走账号密码登录）
+        return self.panel_server.valid_session(self._session_id())
 
     def _send(self, code: int, body: bytes,
               ctype: str = "application/json",
@@ -1297,23 +1283,18 @@ class PanelHandler(BaseHTTPRequestHandler):
 
         # 登录 / 登出页无需鉴权
         if path == "/login":
-            if not ref.login_enabled:
-                self._redirect("/")
-                return
             self._send(200, LOGIN_HTML.encode("utf-8"), "text/html")
             return
         if path == "/logout":
             ref.drop_session(self._session_id())
-            self._redirect("/login" if ref.login_enabled else "/")
+            self._redirect("/login")
             return
 
         if not self._authed():
             if path.startswith("/api/"):
                 self._json({"ok": False, "error": "unauthorized"}, 401)
-            elif ref.login_enabled:
-                self._redirect("/login")
             else:
-                self._send(403, b"Forbidden: bad token", "text/plain")
+                self._redirect("/login")
             return
 
         try:
@@ -1368,7 +1349,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             form = self._read_form()
             user = form.get("username", "")
             pwd = form.get("password", "")
-            if ref.login_enabled and user == ref.panel_user and \
+            if user == ref.panel_user and \
                     secrets.compare_digest(pwd, ref.panel_pass):
                 sid = ref.create_session()
                 self.send_response(302)
@@ -1444,17 +1425,16 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 class PanelServer:
-    """Web 管理面板服务。支持 token 鉴权 + 可选的用户名密码登录。"""
+    """Web 管理面板服务。账号密码登录（会话 cookie），无 token。"""
 
     SESSION_COOKIE = "yu_session"
     SESSION_TTL = 7 * 86400  # 会话有效期 7 天
 
-    def __init__(self, bind: str, port: int, token: str,
+    def __init__(self, bind: str, port: int,
                  hooks: dict[str, Callable], log=print,
-                 panel_user: str = "", panel_pass: str = ""):
+                 panel_user: str = "admin", panel_pass: str = "admin"):
         self.bind = bind
         self.port = port
-        self.token = token
         self.hooks = hooks
         self.log = log
         self.panel_user = panel_user
@@ -1467,7 +1447,7 @@ class PanelServer:
 
     @property
     def login_enabled(self) -> bool:
-        return bool(self.panel_user)
+        return True
 
     def create_session(self) -> str:
         sid = secrets.token_urlsafe(32)
@@ -1490,13 +1470,10 @@ class PanelServer:
             with self._sess_lock:
                 self._sessions.pop(sid, None)
 
-    def apply_auth(self, token: str, user: str, password: str) -> None:
+    def apply_auth(self, user: str, password: str) -> None:
         """热更新鉴权配置，无需重启面板。"""
-        self.token = token
         self.panel_user = user
         self.panel_pass = password
-        if self._handler_cls is not None:
-            self._handler_cls.token = token
 
     def start(self) -> None:
         if self._httpd is not None:
@@ -1505,7 +1482,6 @@ class PanelServer:
         class Handler(PanelHandler):
             pass
 
-        Handler.token = self.token
         Handler.hooks = self.hooks
         Handler.panel_server = self
         self._handler_cls = Handler
@@ -1516,8 +1492,8 @@ class PanelServer:
         self._thread = threading.Thread(target=httpd.serve_forever,
                                         daemon=True, name="panel")
         self._thread.start()
-        self.log(f"[panel] 管理面板 http://{self.bind}:{self.port}/"
-                 f"?token={self.token}")
+        self.log(f"[panel] 管理面板 http://{self.bind}:{self.port}/ "
+                 f"(账号 {self.panel_user})")
 
     def restart(self, bind: str, port: int) -> None:
         """换监听地址/端口（设置页改面板端口时用）。"""

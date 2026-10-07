@@ -22,12 +22,13 @@ import json
 import logging
 import os
 import re
-import secrets
 import signal
 import sys
 import threading
 import time
 import urllib.request
+import urllib.parse
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,15 +44,15 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
 def default_config() -> dict:
     return {
         "data_dir": "/var/lib/Yu-proxy",
-        "panel": {"bind": "0.0.0.0", "port": 52051, "token": "",
-                  "user": "", "pass": ""},
+        "panel": {"bind": "0.0.0.0", "port": 52051,
+                  "user": "admin", "pass": "admin"},
         "proxy": {
             "bind": "0.0.0.0", "port": 52052,
             "user": "", "pass": "",
@@ -113,10 +114,7 @@ def load_config(path: str) -> dict:
             print(f"[warn] 配置文件解析失败，使用默认配置: {e}")
     else:
         p.parent.mkdir(parents=True, exist_ok=True)
-    if not cfg["panel"]["token"]:
-        cfg["panel"]["token"] = secrets.token_urlsafe(24)
-        print("[init] 已生成面板访问 token")
-    # 回写（补全缺省项 + 持久化 token）
+    # 回写（补全缺省项）
     try:
         p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                      encoding="utf-8")
@@ -151,8 +149,10 @@ def validate_config(cfg: dict) -> str | None:
                 return f"{sec}.port 必须在 1-65535 之间"
             if not str(cfg[sec].get("bind", "")).strip():
                 return f"{sec}.bind 不能为空"
-        if not str(cfg["panel"].get("token", "")).strip():
-            return "panel.token 不能为空"
+        if not str(cfg["panel"].get("user", "")).strip():
+            return "panel.user 不能为空"
+        if not str(cfg["panel"].get("pass", "")).strip():
+            return "panel.pass 不能为空"
         if not str(cfg["vpn"].get("device", "")).strip():
             return "vpn.device 不能为空"
         wd = cfg["watchdog"]
@@ -267,10 +267,10 @@ class Daemon:
 
         panel_cfg = cfg["panel"]
         self.panel = PanelServer(
-            panel_cfg["bind"], panel_cfg["port"], panel_cfg["token"],
+            panel_cfg["bind"], panel_cfg["port"],
             self._hooks(), log=self.log,
-            panel_user=panel_cfg.get("user", ""),
-            panel_pass=panel_cfg.get("pass", ""))
+            panel_user=panel_cfg.get("user", "admin"),
+            panel_pass=panel_cfg.get("pass", "admin"))
 
         self._paused = False
         self.watchdog: Watchdog | None = None
@@ -1007,8 +1007,8 @@ class Daemon:
 
         # 面板鉴权：热更新
         p_new = new_cfg["panel"]
-        self.panel.apply_auth(p_new["token"], p_new.get("user", ""),
-                              p_new.get("pass", ""))
+        self.panel.apply_auth(p_new.get("user", "admin"),
+                              p_new.get("pass", "admin"))
 
         # 面板地址/端口变化：重启面板
         p_old = old["panel"]
@@ -1045,8 +1045,7 @@ class Daemon:
         return {
             "ok": True,
             "panel_moved": panel_moved,
-            "panel_url": f"http://{p_new['bind']}:{p_new['port']}/"
-                         f"?token={p_new['token']}",
+            "panel_url": f"http://{p_new['bind']}:{p_new['port']}/",
         }
 
     # ----- 运行 -----
@@ -1179,6 +1178,35 @@ class Daemon:
 
 # ---------------- CLI（经面板 API） ----------------
 
+def _api_session(cfg: dict) -> str:
+    """CLI 用面板账号密码登录，返回会话 cookie。"""
+    panel = cfg["panel"]
+    form = urllib.parse.urlencode(
+        {"username": panel.get("user", "admin"),
+         "password": panel.get("pass", "admin")}).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{panel['port']}/login", data=form, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    # 登录成功返回 302 + Set-Cookie，不跟随跳转直接取 cookie
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        resp = opener.open(req, timeout=15)
+        cookie = resp.headers.get("Set-Cookie", "")
+    except urllib.error.HTTPError as e:
+        # 302 也可能以 HTTPError 形式抛出
+        cookie = e.headers.get("Set-Cookie", "") if e.headers else ""
+        if e.code not in (301, 302, 303) or not cookie:
+            raise RuntimeError(f"面板登录失败 (HTTP {e.code})，请检查账号密码")
+    for part in cookie.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == "yu_session" and v:
+            return f"yu_session={v}"
+    raise RuntimeError("面板登录失败：未获得会话")
+
+
 def _api_call(cfg: dict, path: str, method: str = "GET",
               body: dict | None = None) -> dict:
     panel = cfg["panel"]
@@ -1186,7 +1214,7 @@ def _api_call(cfg: dict, path: str, method: str = "GET",
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
         url, data=data, method=method,
-        headers={"X-Token": panel["token"],
+        headers={"Cookie": _api_session(cfg),
                  "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=70) as resp:
         return json.loads(resp.read().decode("utf-8"))

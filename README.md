@@ -27,7 +27,7 @@ OpenVPN 隧道 + HTTP/SOCKS5 二合一出口 + Web 管理面板，
 - **🔔 告警通知** — 节点切换 / 连接故障 / 恢复时推送 Telegram / Discord / 邮件（面板可发送测试）
 - **📦 自定义节点** — 面板粘贴 .ovpn 直接导入，进入统一调度池（参与一键连接、自动切换、多出口）
 - **🔌 多出口** — 可建多条独立隧道，每条独立 tun 网卡 + 独立代理端口，分给不同设备用，各自有看门狗
-- **📊 Prometheus** — `/metrics` 暴露连接状态、流量、节点数等指标（token 鉴权）
+- **📊 Prometheus** — `/metrics` 暴露连接状态、流量、节点数等指标（需登录会话）
 - **SSH 安全** — OpenVPN 强制 `route-nopull` 不碰系统主路由表，上行流量经 `SO_BINDTODEVICE` 绑定 tun 网卡，SSH 和面板永不断连
 - **DNS 走隧道** — 域名解析手工经隧道发包，不泄漏、不污染
 - **故障自愈** — 看门狗定期探测，连续失败自动换节点重连
@@ -60,7 +60,7 @@ sudo bash install.sh
 ```bash
 git clone https://github.com/seventhrainyday/Yu-proxy.git
 cd Yu-proxy
-# 先按需改 config.json（token 等），然后：
+# 先按需改 config.json，然后：
 docker compose up -d
 ```
 
@@ -70,7 +70,7 @@ docker compose up -d
 装完会打印：
 
 ```
-管理面板：http://<服务器IP>:52051/?token=xxxx
+管理面板：http://<服务器IP>:52051/（默认账号/密码：admin/admin）
 代理地址：<服务器IP>:52052
 ```
 
@@ -91,8 +91,7 @@ docker compose up -d
 - **🔔 通知告警** — Telegram / Discord / 邮件 + 测试按钮
 - **📝 日志** — 搜索、级别彩色标签、导出、清空
 - **ℹ️ 关于/更新** — 版本信息、检查更新、**一键更新**（后台自动拉取重装，配置保留）
-- **🔐 登录** — 在面板安全里填写用户名和密码即启用登录（7 天会话）；不填则只用 token 访问
-- 访问需要 token（安装时自动生成，保存在 `/etc/Yu-proxy/config.json`，也可在面板安全里重新生成）
+- **🔐 登录** — 默认账号密码均为 admin（7 天会话），首次登录后请在「面板安全」里修改
 
 ## 💻 命令行
 
@@ -108,7 +107,7 @@ python3 main.py status                 # 查看状态
 
 ## 🔌 REST API
 
-面板端口即 API 端口，鉴权：URL 参数 `?token=xxx` 或请求头 `X-Token: xxx`。
+面板端口即 API 端口，鉴权：登录会话 cookie（先 POST /login 拿 `yu_session`）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -142,8 +141,9 @@ python3 main.py status                 # 查看状态
 
 ```bash
 # 示例：查询状态 / 手动切换节点
-curl "http://127.0.0.1:52051/api/status?token=YOUR_TOKEN"
-curl -X POST "http://127.0.0.1:52051/api/rotate_now?token=YOUR_TOKEN"
+curl -c cj.txt -d "username=admin&password=admin" http://127.0.0.1:52051/login
+curl -b cj.txt "http://127.0.0.1:52051/api/status"
+curl -b cj.txt -X POST "http://127.0.0.1:52051/api/rotate_now"
 ```
 
 ## ⚙️ 配置
@@ -153,7 +153,8 @@ curl -X POST "http://127.0.0.1:52051/api/rotate_now?token=YOUR_TOKEN"
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `panel.bind` / `panel.port` | `0.0.0.0` / `52051` | 面板监听地址与端口 |
-| `panel.token` | 自动生成 | 面板访问令牌，URL 参数或 `X-Token` 头 |
+| `panel.user` | `admin` | 面板登录用户名 |
+| `panel.pass` | `admin` | 面板登录密码 |
 | `proxy.bind` / `proxy.port` | `0.0.0.0` / `52052` | 代理监听地址与端口 |
 | `proxy.user` / `proxy.pass` | 空 | 留空=不认证；填写后 HTTP Basic 与 SOCKS5 均要求认证 |
 | `proxy.dns_server` | `8.8.8.8` | 经隧道解析 DNS 用的上游 |
@@ -257,3 +258,8 @@ VPNGate 是志愿者提供的免费节点，速度和稳定性无保障，
 ## 📄 许可证
 
 GPL-3.0，见 [LICENSE](LICENSE)。
+
+## 🕘 更新日志
+
+- **v1.3.1** — 取消 token 鉴权，改账号密码登录（默认 admin/admin，首次登录后请修改）；修复设置页开关被拉成横条的样式 bug；CLI 改用账号密码登录面板
+- **v1.3.0** — UI 按规划重做为磨砂极简风 + 固定侧边栏；面板加一键更新；新增最大延迟过滤、风控检测（403/验证码自动切换）、黑名单清空、日志清空、配置导入导出

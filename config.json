@@ -4,7 +4,8 @@
   "panel": {
     "bind": "0.0.0.0",
     "port": 52051,
-    "token": ""
+    "user": "admin",
+    "pass": "admin"
   },
   "proxy": {
     "allow_direct_fallback": false,
