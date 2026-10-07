@@ -42,7 +42,8 @@ DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 def default_config() -> dict:
     return {
         "data_dir": "/var/lib/Yu-proxy",
-        "panel": {"bind": "0.0.0.0", "port": 52051, "token": ""},
+        "panel": {"bind": "0.0.0.0", "port": 52051, "token": "",
+                  "user": "", "pass": ""},
         "proxy": {
             "bind": "0.0.0.0", "port": 52052,
             "user": "", "pass": "",
@@ -93,11 +94,48 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[k] = v
 
 
+def save_config_file(path: str, cfg: dict) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    tmp.replace(p)
+
+
+def validate_config(cfg: dict) -> str | None:
+    """校验设置页提交的配置，返回错误信息，无错返回 None。"""
+    try:
+        for sec in ("panel", "proxy"):
+            port = int(cfg[sec]["port"])
+            if not 1 <= port <= 65535:
+                return f"{sec}.port 必须在 1-65535 之间"
+            if not str(cfg[sec].get("bind", "")).strip():
+                return f"{sec}.bind 不能为空"
+        if not str(cfg["panel"].get("token", "")).strip():
+            return "panel.token 不能为空"
+        if not str(cfg["vpn"].get("device", "")).strip():
+            return "vpn.device 不能为空"
+        wd = cfg["watchdog"]
+        if int(wd.get("interval", 30)) < 5:
+            return "watchdog.interval 不能小于 5 秒"
+        if int(wd.get("fail_threshold", 3)) < 1:
+            return "watchdog.fail_threshold 非法"
+        if int(wd.get("max_retries", 5)) < 1:
+            return "watchdog.max_retries 非法"
+        if not isinstance(cfg["vpn"].get("prefer_countries"), list):
+            return "prefer_countries 须为列表"
+    except (KeyError, TypeError, ValueError):
+        return "配置格式错误"
+    return None
+
+
 # ---------------- 守护进程 ----------------
 
 class Daemon:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, config_path: str):
         self.cfg = cfg
+        self.config_path = config_path
         self.data_dir = Path(cfg["data_dir"])
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._setup_logging()
@@ -106,7 +144,25 @@ class Daemon:
         self.controller = VPNController(
             self.data_dir, device=vpn_cfg["device"], log=self.log)
 
-        proxy_cfg = cfg["proxy"]
+        self._build_proxy()
+
+        panel_cfg = cfg["panel"]
+        self.panel = PanelServer(
+            panel_cfg["bind"], panel_cfg["port"], panel_cfg["token"],
+            self._hooks(), log=self.log,
+            panel_user=panel_cfg.get("user", ""),
+            panel_pass=panel_cfg.get("pass", ""))
+
+        self.watchdog: Watchdog | None = None
+        self._build_watchdog()
+
+        self._stop_event = threading.Event()
+        self._connecting = threading.Event()
+        self.last_error: str | None = None
+        self.last_error_at: float | None = None
+
+    def _build_proxy(self) -> None:
+        proxy_cfg = self.cfg["proxy"]
         auth = None
         if proxy_cfg.get("user"):
             auth = (proxy_cfg["user"], proxy_cfg.get("pass", ""))
@@ -121,23 +177,20 @@ class Daemon:
         self.proxy = ProxyServer(proxy_cfg["bind"], proxy_cfg["port"],
                                  self.proxy_ctx)
 
-        panel_cfg = cfg["panel"]
-        self.panel = PanelServer(panel_cfg["bind"], panel_cfg["port"],
-                                 panel_cfg["token"], self._hooks(),
-                                 log=self.log)
-
-        wd_cfg = cfg["watchdog"]
-        self.watchdog = Watchdog(
-            self.controller,
-            pick_server=self._pick_server,
-            interval=wd_cfg.get("interval", 30),
-            fail_threshold=wd_cfg.get("fail_threshold", 3),
-            max_retries=wd_cfg.get("max_retries", 5),
-            log=self.log,
-        ) if wd_cfg.get("enabled", True) else None
-
-        self._stop_event = threading.Event()
-        self._connecting = threading.Event()
+    def _build_watchdog(self) -> None:
+        wd_cfg = self.cfg["watchdog"]
+        if self.watchdog is not None:
+            self.watchdog.stop()
+            self.watchdog = None
+        if wd_cfg.get("enabled", True):
+            self.watchdog = Watchdog(
+                self.controller,
+                pick_server=self._pick_server,
+                interval=wd_cfg.get("interval", 30),
+                fail_threshold=wd_cfg.get("fail_threshold", 3),
+                max_retries=wd_cfg.get("max_retries", 5),
+                log=self.log,
+            )
 
     # ----- 日志 -----
     def _setup_logging(self) -> None:
@@ -163,6 +216,8 @@ class Daemon:
             "connect_best": self._hook_connect_best,
             "disconnect": self._hook_disconnect,
             "log": self._hook_log,
+            "get_config": self._hook_get_config,
+            "save_config": self._hook_save_config,
         }
 
     def _hook_status(self) -> dict:
@@ -178,6 +233,9 @@ class Daemon:
             },
             "server_count": len(servers),
             "cache_at": cached_at,
+            "login_enabled": self.panel.login_enabled,
+            "last_error": self.last_error,
+            "last_error_at": self.last_error_at,
         }
 
     def _hook_servers(self) -> dict:
@@ -233,7 +291,12 @@ class Daemon:
         def _run():
             try:
                 self.controller.start(server)
+                self.last_error = None
+                self.last_error_at = None
             except Exception as e:
+                # 只保留第一行，面板展示用
+                self.last_error = str(e).split("\n")[0][:300]
+                self.last_error_at = time.time()
                 self.log(f"[api] 连接 {server['id']} 失败: {e}")
             finally:
                 self._connecting.clear()
@@ -276,6 +339,78 @@ class Daemon:
             except Exception:
                 pass
         return lines[-n:]
+
+    def _hook_get_config(self) -> dict:
+        return {"ok": True, "config": self.cfg}
+
+    def _hook_save_config(self, body: dict) -> dict:
+        new_cfg = body.get("config")
+        if not isinstance(new_cfg, dict):
+            return {"ok": False, "error": "缺少 config"}
+        # 前端偏好国家是逗号分隔字符串，兼容转成列表
+        try:
+            pc = new_cfg["vpn"]["prefer_countries"]
+            if isinstance(pc, str):
+                new_cfg["vpn"]["prefer_countries"] = [
+                    c.strip().upper() for c in pc.split(",") if c.strip()]
+        except (KeyError, TypeError):
+            pass
+        # 深合并：只覆盖提交的键，保留其他
+        merged = json.loads(json.dumps(self.cfg))
+        _deep_merge(merged, new_cfg)
+        err = validate_config(merged)
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            result = self.reconfigure(merged)
+        except Exception as e:
+            self.log(f"[api] 应用配置失败: {e}")
+            return {"ok": False, "error": f"应用配置失败: {e}"}
+        return result
+
+    def reconfigure(self, new_cfg: dict) -> dict:
+        """热应用新配置：代理/面板/看门狗能热重启的都热重启。"""
+        old = self.cfg
+        self.cfg = new_cfg
+        save_config_file(self.config_path, new_cfg)
+        self.log("[api] 配置已更新，热应用中")
+
+        # 代理：地址/端口/认证/DNS/兜底任一变化都重启代理
+        if new_cfg["proxy"] != old["proxy"]:
+            self.proxy.stop()
+            self._build_proxy()
+            self.proxy.start()
+            self.log("[api] 代理已按新配置重启")
+
+        # 面板鉴权：热更新
+        p_new = new_cfg["panel"]
+        self.panel.apply_auth(p_new["token"], p_new.get("user", ""),
+                              p_new.get("pass", ""))
+
+        # 面板地址/端口变化：重启面板
+        p_old = old["panel"]
+        panel_moved = (p_old["bind"], int(p_old["port"])) != \
+                      (p_new["bind"], int(p_new["port"]))
+        if panel_moved:
+            self.panel.restart(p_new["bind"], int(p_new["port"]))
+            self.log(f"[api] 面板已迁移到 {p_new['bind']}:{p_new['port']}")
+
+        # VPN：网卡名下次连接生效
+        self.controller.device = new_cfg["vpn"]["device"]
+
+        # 看门狗：配置变化则重建
+        if new_cfg["watchdog"] != old["watchdog"]:
+            self._build_watchdog()
+            if self.watchdog is not None:
+                self.watchdog.start()
+            self.log("[api] 看门狗已按新配置重启")
+
+        return {
+            "ok": True,
+            "panel_moved": panel_moved,
+            "panel_url": f"http://{p_new['bind']}:{p_new['port']}/"
+                         f"?token={p_new['token']}",
+        }
 
     # ----- 运行 -----
     def _current_device(self) -> str | None:
@@ -436,7 +571,7 @@ def main() -> int:
     cfg = load_config(config_path)
 
     if args.cmd == "daemon" or args.cmd is None:
-        Daemon(cfg).run()
+        Daemon(cfg, config_path).run()
         return 0
     if args.cmd == "fetch":
         return cmd_fetch(cfg)

@@ -37,6 +37,12 @@ install_deps() {
 }
 install_deps
 
+# 2.5 TUN 预检（OpenVPN 建隧道必需）
+if [ ! -e /dev/net/tun ]; then
+  echo "[警告] 未检测到 /dev/net/tun，OpenVPN 将无法创建隧道、节点连不上。"
+  echo "       LXC/容器类 VPS 需找商家开启 TUN 支持后再继续。"
+fi
+
 # 3. 复制程序文件
 echo "[2/5] 复制文件到 $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR"

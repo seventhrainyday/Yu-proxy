@@ -10,7 +10,9 @@ panel.py — Web 管理面板
 from __future__ import annotations
 
 import json
+import secrets
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
@@ -91,8 +93,11 @@ tr:hover td { background:#141c28; }
       <button class="primary" id="btn-best" onclick="connectBest()">⚡ 一键连接最优</button>
       <button class="danger" id="btn-disc" onclick="disconnect()">断开</button>
       <button id="btn-refresh" onclick="refreshServers()">🔄 刷新节点列表</button>
+      <button onclick="openSettings()">⚙️ 设置</button>
+      <button id="btn-logout" onclick="logout()" style="display:none">退出登录</button>
     </div>
     <div class="note" id="proxy-info"></div>
+    <div class="note" id="last-error" style="color:var(--red); display:none"></div>
   </div>
 
   <div class="card">
@@ -120,7 +125,122 @@ tr:hover td { background:#141c28; }
   </div>
 </div>
 
+<div id="settings-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:50; overflow-y:auto;">
+  <div style="max-width:620px; margin:36px auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px;">
+    <h2 style="margin:0 0 14px; font-size:16px;">⚙️ 设置</h2>
+    <div id="settings-body"></div>
+    <div class="btnrow" style="margin-top:16px">
+      <button class="primary" id="btn-save" onclick="saveSettings()">保存</button>
+      <button onclick="closeSettings()">取消</button>
+    </div>
+    <div class="note" id="settings-msg" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <script>
+const SETTING_FIELDS = [
+  {title:'代理', fields:[
+    ['proxy.bind','监听地址','text'],
+    ['proxy.port','端口','number'],
+    ['proxy.user','用户名（留空=不认证）','text'],
+    ['proxy.pass','密码','password'],
+    ['proxy.dns_server','隧道 DNS','text'],
+    ['proxy.allow_direct_fallback','VPN断开时直连兜底','checkbox'],
+  ]},
+  {title:'面板', fields:[
+    ['panel.bind','监听地址','text'],
+    ['panel.port','端口','number'],
+    ['panel.token','访问 Token','text','regen'],
+    ['panel.user','登录用户名（留空=禁用登录）','text'],
+    ['panel.pass','登录密码','password'],
+  ]},
+  {title:'VPN', fields:[
+    ['vpn.device','隧道网卡名','text'],
+    ['vpn.autoconnect','开机自动连接','checkbox'],
+    ['vpn.prefer_countries','偏好国家（逗号分隔，如 JP,KR,SG）','text'],
+    ['vpn.tcp_only','只用 TCP 节点','checkbox'],
+  ]},
+  {title:'看门狗', fields:[
+    ['watchdog.enabled','启用故障自动切换','checkbox'],
+    ['watchdog.interval','探测间隔（秒）','number'],
+    ['watchdog.fail_threshold','连续失败几次后切换','number'],
+    ['watchdog.max_retries','每次故障最多试几个节点','number'],
+  ]},
+];
+function cfgGet(cfg, path) {
+  return path.split('.').reduce((o,k) => (o==null?null:o[k]), cfg);
+}
+function cfgSet(cfg, path, val) {
+  const ks = path.split('.'); let o = cfg;
+  for (let i=0;i<ks.length-1;i++) { o[ks[i]] = o[ks[i]]||{}; o = o[ks[i]]; }
+  o[ks[ks.length-1]] = val;
+}
+let curConfig = null;
+async function openSettings() {
+  const m = document.getElementById('settings-msg'); m.textContent = '';
+  try {
+    const r = await api('/api/config');
+    if (!r.ok) throw new Error(r.error||'读取失败');
+    curConfig = r.config;
+    const body = document.getElementById('settings-body');
+    body.innerHTML = SETTING_FIELDS.map(sec =>
+      '<h3 style="font-size:14px;color:var(--dim);margin:14px 0 8px">'+sec.title+'</h3>' +
+      sec.fields.map(f => {
+        const [path,label,type,extra] = f;
+        let v = cfgGet(curConfig, path);
+        if (Array.isArray(v)) v = v.join(',');
+        const id = 'cfg-'+path.split('.').join('-');
+        let input;
+        if (type === 'checkbox')
+          input = '<input type="checkbox" id="'+id+'"'+(v?' checked':'')+' style="width:auto">';
+        else
+          input = '<input id="'+id+'" type="'+type+'" value="'+esc(v==null?'':v)+'"'
+            +' style="background:#101722;border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px;width:100%;box-sizing:border-box">'
+            + (extra==='regen' ? ' <button onclick="regenToken()" style="margin-top:6px">重新生成</button>' : '');
+        return '<div style="margin-bottom:10px"><div style="font-size:13px;margin-bottom:4px">'+label+'</div>'+input+'</div>';
+      }).join('')
+    ).join('');
+    document.getElementById('settings-modal').style.display = 'block';
+  } catch(e) { alert('读取设置失败：'+e.message); }
+}
+function closeSettings() {
+  document.getElementById('settings-modal').style.display = 'none';
+}
+function regenToken() {
+  const bytes = new Uint8Array(24); crypto.getRandomValues(bytes);
+  const t = btoa(String.fromCharCode(...bytes)).replace(/[^a-zA-Z0-9]/g,'').slice(0,32);
+  document.getElementById('cfg-panel-token').value = t;
+}
+async function saveSettings() {
+  const btn = document.getElementById('btn-save');
+  const m = document.getElementById('settings-msg');
+  btn.disabled = true; m.textContent = '保存中…'; m.style.color = 'var(--dim)';
+  try {
+    SETTING_FIELDS.forEach(sec => sec.fields.forEach(f => {
+      const [path,,type] = f;
+      const el = document.getElementById('cfg-'+path.split('.').join('-'));
+      let v = type==='checkbox' ? el.checked : el.value.trim();
+      if ((path==='proxy.port'||path==='panel.port')) v = parseInt(v,10);
+      if (['watchdog.interval','watchdog.fail_threshold','watchdog.max_retries'].includes(path)) v = parseInt(v,10);
+      cfgSet(curConfig, path, v);
+    }));
+    const r = await api('/api/config','POST',{config:curConfig});
+    if (!r.ok) throw new Error(r.error||'保存失败');
+    m.textContent = '已保存，配置即时生效';
+    m.style.color = 'var(--green)';
+    if (r.panel_moved) {
+      m.textContent += '，面板地址已变更，3 秒后跳转…';
+      setTimeout(() => { location.href = r.panel_url.replace('0.0.0.0', location.hostname); }, 3000);
+    } else {
+      setTimeout(closeSettings, 1200);
+    }
+    loadStatus();
+  } catch(e) {
+    m.textContent = '保存失败：'+e.message; m.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+}
+function logout() { location.href = '/logout'; }
 const token = new URLSearchParams(location.search).get('token') || '';
 function api(path, method, body) {
   const url = path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
@@ -168,7 +288,18 @@ async function loadStatus() {
     document.getElementById('proxy-info').textContent =
       '代理地址：' + s.proxy.listen + '（HTTP / HTTPS CONNECT / SOCKS5 二合一）'
       + (s.proxy.auth ? ' · 已启用账号认证' : '');
-  } catch(e) { /* 忽略轮询错误 */ }
+    const le = document.getElementById('last-error');
+    if (s.last_error) {
+      le.style.display = 'block';
+      le.textContent = '上次连接失败：' + s.last_error;
+    } else {
+      le.style.display = 'none';
+    }
+    document.getElementById('btn-logout').style.display =
+      s.login_enabled ? '' : 'none';
+  } catch(e) {
+    if (/401/.test(e.message)) location.href = '/login';
+  }
 }
 async function loadServers() {
   try {
@@ -231,6 +362,48 @@ setInterval(loadLog, 10000);
 </html>
 """
 
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yu-proxy · 登录</title>
+<style>
+body { margin:0; background:#0f141b; color:#e8eef6;
+       font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+       display:flex; align-items:center; justify-content:center; height:100vh; }
+.box { background:#18202b; border:1px solid #243044; border-radius:12px;
+       padding:32px; width:320px; }
+h1 { font-size:18px; margin:0 0 20px; text-align:center; }
+input { width:100%; background:#101722; border:1px solid #243044; color:#e8eef6;
+        border-radius:8px; padding:10px 12px; font-size:14px; margin-bottom:12px;
+        box-sizing:border-box; }
+button { width:100%; background:#1c5fb8; color:#fff; border:none;
+         border-radius:8px; padding:10px; font-size:15px; cursor:pointer; }
+button:hover { background:#2470d0; }
+.err { color:#ff5d5d; font-size:13px; min-height:20px; margin-bottom:8px;
+       text-align:center; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>🌐 Yu-proxy</h1>
+  <div class="err" id="err"></div>
+  <form method="post" action="/login">
+    <input name="username" placeholder="用户名" autocomplete="username" required>
+    <input name="password" type="password" placeholder="密码"
+           autocomplete="current-password" required>
+    <button type="submit">登录</button>
+  </form>
+</div>
+<script>
+if (new URLSearchParams(location.search).get('e') === '1')
+  document.getElementById('err').textContent = '用户名或密码错误';
+</script>
+</body>
+</html>
+"""
+
 
 class PanelHandler(BaseHTTPRequestHandler):
     server_version = "Yu-proxy-panel/1.0"
@@ -238,18 +411,35 @@ class PanelHandler(BaseHTTPRequestHandler):
     # 由 PanelServer 注入
     token: str = ""
     hooks: dict = {}
+    panel_server = None  # PanelServer 实例
 
     def log_message(self, *args):
         pass  # 面板访问日志不刷屏
 
     # ---------- 工具 ----------
 
+    def _session_id(self) -> str | None:
+        cookie = self.headers.get("Cookie") or ""
+        for part in cookie.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == PanelServer.SESSION_COOKIE:
+                return v or None
+        return None
+
     def _authed(self) -> bool:
-        if self.headers.get("X-Token") == self.token:
+        # 1. 登录会话 cookie
+        if self.panel_server.valid_session(self._session_id()):
+            return True
+        # 2. API token（请求头或 URL 参数，兼容 CLI）
+        if self.headers.get("X-Token") and \
+                secrets.compare_digest(self.headers.get("X-Token"),
+                                       self.token):
             return True
         qs = urllib.parse.urlparse(self.path).query
         params = urllib.parse.parse_qs(qs)
-        return params.get("token", [""])[0] == self.token
+        qtoken = params.get("token", [""])[0]
+        return bool(self.token) and qtoken and \
+            secrets.compare_digest(qtoken, self.token)
 
     def _send(self, code: int, body: bytes,
               ctype: str = "application/json") -> None:
@@ -275,13 +465,51 @@ class PanelHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _read_form(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 10000:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        return {k: v[0] for k, v in
+                urllib.parse.parse_qs(raw).items()}
+
     # ---------- 路由 ----------
 
     def do_GET(self):
-        if not self._authed():
-            self._send(403, b"Forbidden: bad token", "text/plain")
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        ref = self.panel_server
+
+        # 登录 / 登出页无需鉴权
+        if path == "/login":
+            if not ref.login_enabled:
+                self._redirect("/")
+                return
+            self._send(200, LOGIN_HTML.encode("utf-8"), "text/html")
             return
-        path = urllib.parse.urlparse(self.path).path
+        if path == "/logout":
+            ref.drop_session(self._session_id())
+            self._redirect("/login" if ref.login_enabled else "/")
+            return
+
+        if not self._authed():
+            if path.startswith("/api/"):
+                self._json({"ok": False, "error": "unauthorized"}, 401)
+            elif ref.login_enabled:
+                self._redirect("/login")
+            else:
+                self._send(403, b"Forbidden: bad token", "text/plain")
+            return
+
         try:
             if path == "/":
                 self._send(200, PAGE_HTML.encode("utf-8"), "text/html")
@@ -289,9 +517,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["status"]())
             elif path == "/api/servers":
                 self._json(self.hooks["servers"]())
+            elif path == "/api/config":
+                self._json(self.hooks["get_config"]())
             elif path == "/api/log":
-                qs = urllib.parse.parse_qs(
-                    urllib.parse.urlparse(self.path).query)
+                qs = urllib.parse.parse_qs(parsed.query)
                 try:
                     n = max(1, min(500, int(qs.get("n", ["120"])[0])))
                 except ValueError:
@@ -303,10 +532,34 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": str(e)}, 500)
 
     def do_POST(self):
-        if not self._authed():
-            self._send(403, b"Forbidden: bad token", "text/plain")
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        ref = self.panel_server
+
+        # 登录提交（表单）
+        if path == "/login":
+            form = self._read_form()
+            user = form.get("username", "")
+            pwd = form.get("password", "")
+            if ref.login_enabled and user == ref.panel_user and \
+                    secrets.compare_digest(pwd, ref.panel_pass):
+                sid = ref.create_session()
+                self.send_response(302)
+                self.send_header(
+                    "Set-Cookie",
+                    f"{PanelServer.SESSION_COOKIE}={sid}; HttpOnly; "
+                    f"Path=/; Max-Age={PanelServer.SESSION_TTL}")
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._redirect("/login?e=1")
             return
-        path = urllib.parse.urlparse(self.path).path
+
+        if not self._authed():
+            self._json({"ok": False, "error": "unauthorized"}, 401)
+            return
+
         body = self._read_json()
         try:
             if path == "/api/refresh":
@@ -317,6 +570,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["connect_best"]())
             elif path == "/api/disconnect":
                 self._json(self.hooks["disconnect"]())
+            elif path == "/api/config":
+                self._json(self.hooks["save_config"](body))
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
         except Exception as e:
@@ -324,17 +579,59 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 class PanelServer:
-    """Web 管理面板服务。"""
+    """Web 管理面板服务。支持 token 鉴权 + 可选的用户名密码登录。"""
+
+    SESSION_COOKIE = "yu_session"
+    SESSION_TTL = 7 * 86400  # 会话有效期 7 天
 
     def __init__(self, bind: str, port: int, token: str,
-                 hooks: dict[str, Callable], log=print):
+                 hooks: dict[str, Callable], log=print,
+                 panel_user: str = "", panel_pass: str = ""):
         self.bind = bind
         self.port = port
         self.token = token
         self.hooks = hooks
         self.log = log
+        self.panel_user = panel_user
+        self.panel_pass = panel_pass
+        self._sessions: dict[str, float] = {}
+        self._sess_lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._handler_cls = None
+
+    @property
+    def login_enabled(self) -> bool:
+        return bool(self.panel_user)
+
+    def create_session(self) -> str:
+        sid = secrets.token_urlsafe(32)
+        with self._sess_lock:
+            self._sessions[sid] = time.time() + self.SESSION_TTL
+        return sid
+
+    def valid_session(self, sid: str | None) -> bool:
+        if not sid:
+            return False
+        with self._sess_lock:
+            exp = self._sessions.get(sid)
+            if exp and exp > time.time():
+                return True
+            self._sessions.pop(sid, None)
+            return False
+
+    def drop_session(self, sid: str | None) -> None:
+        if sid:
+            with self._sess_lock:
+                self._sessions.pop(sid, None)
+
+    def apply_auth(self, token: str, user: str, password: str) -> None:
+        """热更新鉴权配置，无需重启面板。"""
+        self.token = token
+        self.panel_user = user
+        self.panel_pass = password
+        if self._handler_cls is not None:
+            self._handler_cls.token = token
 
     def start(self) -> None:
         if self._httpd is not None:
@@ -345,6 +642,8 @@ class PanelServer:
 
         Handler.token = self.token
         Handler.hooks = self.hooks
+        Handler.panel_server = self
+        self._handler_cls = Handler
 
         httpd = ThreadingHTTPServer((self.bind, self.port), Handler)
         self.port = httpd.server_address[1]
@@ -354,6 +653,13 @@ class PanelServer:
         self._thread.start()
         self.log(f"[panel] 管理面板 http://{self.bind}:{self.port}/"
                  f"?token={self.token}")
+
+    def restart(self, bind: str, port: int) -> None:
+        """换监听地址/端口（设置页改面板端口时用）。"""
+        self.stop()
+        self.bind = bind
+        self.port = port
+        self.start()
 
     def stop(self) -> None:
         if self._httpd is not None:
