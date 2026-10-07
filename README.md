@@ -1,6 +1,6 @@
 # 🌐 Yu-proxy
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/seventhrainyday/Yu-proxy)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/seventhrainyday/Yu-proxy)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-yellow)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey)]()
