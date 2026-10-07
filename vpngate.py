@@ -219,8 +219,9 @@ def filter_servers(
     allow: list[str] | None = None,
     block: list[str] | None = None,
     min_bandwidth_mbps: float = 0,
+    max_ping_ms: float = 0,
 ) -> list[dict[str, Any]]:
-    """国家白名单/黑名单 + 最低带宽过滤。"""
+    """国家白名单/黑名单 + 最低带宽 + 最大延迟过滤。"""
     allow_set = {c.upper() for c in (allow or [])}
     block_set = {c.upper() for c in (block or [])}
     out = []
@@ -230,10 +231,14 @@ def filter_servers(
             continue
         if cc in block_set:
             continue
-        # 用户手动导入的节点不受带宽下限影响
-        if not s.get("custom") and min_bandwidth_mbps > 0 and \
-                s["speed_bps"] < min_bandwidth_mbps * 1_000_000:
-            continue
+        # 用户手动导入的节点不受带宽/延迟下限影响
+        if not s.get("custom"):
+            if min_bandwidth_mbps > 0 and \
+                    s["speed_bps"] < min_bandwidth_mbps * 1_000_000:
+                continue
+            if max_ping_ms > 0 and 0 < s["ping"] and \
+                    s["ping"] > max_ping_ms:
+                continue
         out.append(s)
     return out
 
@@ -246,6 +251,7 @@ def pick_best(
     allow: list[str] | None = None,
     block: list[str] | None = None,
     min_bandwidth_mbps: float = 0,
+    max_ping_ms: float = 0,
     is_blacklisted: Callable[[str], bool] | None = None,
 ) -> dict[str, Any] | None:
     """按排序策略挑一个最优节点。
@@ -254,7 +260,8 @@ def pick_best(
     is_blacklisted: 黑名单回调，被拉黑的节点跳过。
     """
     exclude = exclude_ids or set()
-    pool = filter_servers(servers, allow, block, min_bandwidth_mbps)
+    pool = filter_servers(servers, allow, block, min_bandwidth_mbps,
+                        max_ping_ms)
     candidates = [
         s for s in sort_servers(pool, prefer_countries, tcp_only)
         if s["id"] not in exclude
@@ -271,11 +278,13 @@ def pick_weighted(
     allow: list[str] | None = None,
     block: list[str] | None = None,
     min_bandwidth_mbps: float = 0,
+    max_ping_ms: float = 0,
     is_blacklisted: Callable[[str], bool] | None = None,
 ) -> dict[str, Any] | None:
     """权重随机：分数越高被选中的概率越大（调度策略用）。"""
     exclude = exclude_ids or set()
-    pool = filter_servers(servers, allow, block, min_bandwidth_mbps)
+    pool = filter_servers(servers, allow, block, min_bandwidth_mbps,
+                        max_ping_ms)
     candidates = [
         s for s in sort_servers(pool, prefer_countries, tcp_only)
         if s["id"] not in exclude

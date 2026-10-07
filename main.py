@@ -43,7 +43,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -70,6 +70,7 @@ def default_config() -> dict:
             "enabled": True, "interval": 30,
             "fail_threshold": 3, "max_retries": 5,
             "health_check": True, "health_interval": 60,
+            "risk_detect": False,
         },
         "vpngate": {
             "api_urls": ["https://www.vpngate.net/api/iphone/"],
@@ -79,6 +80,7 @@ def default_config() -> dict:
             "countries_allow": [],
             "countries_block": [],
             "min_bandwidth_mbps": 0,
+            "max_ping_ms": 0,
         },
         "scheduler": {
             "mode": "failover",
@@ -284,8 +286,8 @@ class Daemon:
         # 事件日志（连接/切换/故障），内存 + 落盘
         self._events: deque = deque(maxlen=200)
         self._load_events()
-        # 网速采样：(t, up_bps, down_bps)，每 2 秒一个点
-        self._throughput: deque = deque(maxlen=180)
+        # 网速采样：(t, up_bps, down_bps)，每 2 秒一个点，保留 30 分钟
+        self._throughput: deque = deque(maxlen=900)
         self._tp_last: tuple[float, int, int] | None = None
         # 调度状态
         self._exit_ip = ""
@@ -408,8 +410,9 @@ class Daemon:
         return f"http://{host}:{self.proxy.port}", auth
 
     def _health_check(self) -> dict:
-        hc = HealthChecker(self._current_device, self._proxy_addr,
-                           log=self.log)
+        hc = HealthChecker(
+            self._current_device, self._proxy_addr, log=self.log,
+            risk_detect=self.cfg["watchdog"].get("risk_detect", False))
         r = hc.check()
         self._last_health = r
         if r.get("exit_ip"):
@@ -462,6 +465,11 @@ class Daemon:
             "exit_stop": self._hook_exit_stop,
             "exit_delete": self._hook_exit_delete,
             "metrics": self._hook_metrics,
+            "update_check": self._hook_update_check,
+            "update": self._hook_update,
+            "blacklist_clear": self._hook_blacklist_clear,
+            "log_clear": self._hook_log_clear,
+            "config_import": self._hook_config_import,
         }
 
     def _hook_status(self) -> dict:
@@ -698,6 +706,91 @@ class Daemon:
     def _hook_exit_delete(self, body: dict) -> dict:
         return self.exit_manager.delete((body or {}).get("id", ""))
 
+    # ---------- 一键更新 ----------
+
+    UPDATE_URL = ("https://raw.githubusercontent.com/seventhrainyday/"
+                  "Yu-proxy/main/install-remote.sh")
+
+    def _hook_update_check(self) -> dict:
+        """检查 GitHub 是否有新版本。"""
+        try:
+            req = urllib.request.Request(
+                "https://raw.githubusercontent.com/seventhrainyday/"
+                "Yu-proxy/main/main.py",
+                headers={"User-Agent": "Yu-proxy/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                head = resp.read(4096).decode("utf-8", errors="replace")
+            m = re.search(r'VERSION\s*=\s*"([^"]+)"', head)
+            latest = m.group(1) if m else ""
+            if not latest:
+                return {"ok": False, "error": "无法解析远端版本号"}
+            return {"ok": True, "current": VERSION, "latest": latest,
+                    "has_update": latest != VERSION}
+        except Exception as e:
+            return {"ok": False,
+                    "error": f"检查失败: {str(e).splitlines()[0][:150]}"}
+
+    def _hook_update(self) -> dict:
+        """一键更新：后台脱离进程重跑一键安装脚本，完成后服务自动重启。"""
+        def _run():
+            import subprocess
+            # 等 API 响应返回后再开始，避免连接被提前掐断
+            time.sleep(2)
+            try:
+                subprocess.Popen(
+                    ["bash", "-c",
+                     f"sleep 1; bash <(curl -sSL {self.UPDATE_URL})"
+                     f" >>/var/lib/Yu-proxy/update.log 2>&1"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True)
+            except Exception as e:
+                self.log(f"[update] 启动更新失败: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+        self._event("update", "开始一键更新，服务将自动重启", None)
+        self.log("[update] 一键更新已启动")
+        return {"ok": True, "msg": "更新已开始，约 30 秒后刷新页面"}
+
+    # ---------- 黑名单 / 日志 / 配置 ----------
+
+    def _hook_blacklist_clear(self) -> dict:
+        n = self.store.clear_all()
+        self._event("unblock", f"已清空全部黑名单（{n} 个）", None)
+        return {"ok": True, "cleared": n}
+
+    def _hook_log_clear(self) -> dict:
+        try:
+            log_path = self.data_dir / "app.log"
+            open(log_path, "w").close()
+            # 重新打开 file handler，避免继续写旧 fd
+            for h in list(self._logger.handlers):
+                if isinstance(h, logging.FileHandler):
+                    self._logger.removeHandler(h)
+                    h.close()
+            self._logger.addHandler(
+                logging.FileHandler(log_path, encoding="utf-8"))
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _hook_config_import(self, body: dict) -> dict:
+        """导入配置 JSON（面板上传）。"""
+        cfg = (body or {}).get("config")
+        if not isinstance(cfg, dict):
+            return {"ok": False, "error": "缺少 config"}
+        merged = json.loads(json.dumps(default_config()))
+        _deep_merge(merged, cfg)
+        err = validate_config(merged)
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            result = self.reconfigure(merged)
+        except Exception as e:
+            return {"ok": False, "error": f"应用配置失败: {e}"}
+        self._event("config", "已导入配置并热应用", None)
+        return result
+
     # ---------- Prometheus ----------
 
     def _hook_metrics(self) -> str:
@@ -765,6 +858,7 @@ class Daemon:
             allow=fcfg.get("countries_allow"),
             block=fcfg.get("countries_block"),
             min_bandwidth_mbps=fcfg.get("min_bandwidth_mbps", 0),
+            max_ping_ms=fcfg.get("max_ping_ms", 0),
             is_blacklisted=lambda sid: self.store.is_blacklisted(sid)[0],
         )
         if self.cfg["scheduler"].get("mode") == "random":

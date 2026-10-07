@@ -40,10 +40,23 @@ def tcp_ping(host: str, port: int = 443, timeout: float = 5,
         s.close()
 
 
+# 疑似验证码/风控页面的关键词（命中则判定为风险 IP）
+RISK_KEYWORDS = (
+    "captcha", "recaptcha", "cf-challenge", "challenge-platform",
+    "attention required", "verify you are human", "are you a robot",
+    " Cloudflare".lower(),
+)
+
+
 def http_probe(proxy: str, urls: list[str] | None = None,
                timeout: float = 10,
-               auth: tuple[str, str] | None = None) -> dict:
-    """经代理访问探测站。返回 {ok, ms, exit_ip, url, error}。"""
+               auth: tuple[str, str] | None = None,
+               risk_detect: bool = False) -> dict:
+    """经代理访问探测站。返回 {ok, ms, exit_ip, url, error, risk}。
+
+    risk_detect=True 时：HTTP 403 或页面疑似验证码/风控时 risk=True，
+    调用方可据此判定该出口 IP 已被风控、触发切换。
+    """
     urls = urls or PROBE_URLS
     handlers = [urllib.request.ProxyHandler(
         {"http": proxy, "https": proxy})]
@@ -58,30 +71,48 @@ def http_probe(proxy: str, urls: list[str] | None = None,
             t0 = time.monotonic()
             req = urllib.request.Request(
                 url, headers={"User-Agent": "Yu-proxy-health/1.0"})
-            with opener.open(req, timeout=timeout) as resp:
+            try:
+                resp = opener.open(req, timeout=timeout)
+                status = resp.status
+            except urllib.error.HTTPError as e:
+                # 403 等：读出状态码，用于风控判定
+                status = e.code
+                resp = e
+            with resp:
                 body = resp.read(4096).decode("utf-8", errors="replace")
-                ms = (time.monotonic() - t0) * 1000
-                exit_ip = ""
-                for line in body.splitlines():
-                    if line.startswith("ip="):
-                        exit_ip = line[3:].strip()
-                        break
-                return {"ok": True, "ms": round(ms, 1),
-                        "exit_ip": exit_ip, "url": url, "error": ""}
+            ms = (time.monotonic() - t0) * 1000
+            exit_ip = ""
+            for line in body.splitlines():
+                if line.startswith("ip="):
+                    exit_ip = line[3:].strip()
+                    break
+            risk = False
+            if risk_detect:
+                low = body.lower()
+                if status == 403 or any(k in low for k in RISK_KEYWORDS):
+                    risk = True
+            if status == 403 and not risk_detect:
+                # 不开风控检测时，403 也算探测失败
+                last_err = f"HTTP 403（{url}）"
+                continue
+            return {"ok": True, "ms": round(ms, 1),
+                    "exit_ip": exit_ip, "url": url, "error": "",
+                    "risk": risk, "status": status}
         except Exception as e:
             last_err = str(e).split("\n")[0][:200]
     return {"ok": False, "ms": None, "exit_ip": "",
-            "url": "", "error": last_err}
+            "url": "", "error": last_err, "risk": False, "status": 0}
 
 
 class HealthChecker:
     """对当前隧道做多层健康检查。"""
 
     def __init__(self, get_device, get_proxy: callable,
-                 log=print):
+                 log=print, risk_detect: bool = False):
         self._get_device = get_device
         self._get_proxy = get_proxy  # 返回 (proxy_url, auth)
         self.log = log
+        self.risk_detect = risk_detect
 
     def check(self) -> dict:
         device = self._get_device()
@@ -101,13 +132,18 @@ class HealthChecker:
 
         # 第 2 层：真实外网连通（防假连通）
         proxy_url, auth = self._get_proxy()
-        probe = http_probe(proxy_url, auth=auth)
+        probe = http_probe(proxy_url, auth=auth,
+                           risk_detect=self.risk_detect)
         layers["http"] = {"ok": probe["ok"], "ms": probe["ms"],
-                          "url": probe["url"]}
+                          "url": probe["url"], "risk": probe["risk"]}
         if not probe["ok"]:
             return {"ok": False,
                     "reason": f"隧道假连通（上不了网）: {probe['error']}",
                     "layers": layers, "exit_ip": ""}
+        if probe["risk"]:
+            return {"ok": False,
+                    "reason": "出口 IP 疑似被风控（403/验证码）",
+                    "layers": layers, "exit_ip": probe["exit_ip"]}
 
         return {"ok": True, "reason": "", "layers": layers,
                 "exit_ip": probe["exit_ip"]}

@@ -34,7 +34,8 @@
     "interval": 30,
     "max_retries": 5,
     "health_check": true,
-    "health_interval": 60
+    "health_interval": 60,
+    "risk_detect": false
   },
   "vpngate": {
     "api_urls": [
@@ -45,7 +46,8 @@
   "filter": {
     "countries_allow": [],
     "countries_block": [],
-    "min_bandwidth_mbps": 0
+    "min_bandwidth_mbps": 0,
+    "max_ping_ms": 0
   },
   "scheduler": {
     "mode": "failover",

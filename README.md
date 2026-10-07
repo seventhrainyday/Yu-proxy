@@ -83,12 +83,16 @@ docker compose up -d
 
 新拟物风格 UI，支持明 / 暗主题一键切换（右上角 🌙），含 4 个标签页：
 
-- **📊 仪表盘** — 状态指示灯（闪烁动画）、出口节点 / 出口 IP / 延迟 / 已连接时长、实时上下行网速曲线、快捷大按钮（一键连接 / 手动切换 / 暂停自动切换 / 断开 / 刷新节点）、最近事件
-- **🖥️ 节点** — 节点卡片（国旗 / 国家 / 延迟 / 带宽 / 评分 / 在线时长 / 历史成功率），支持搜索、排序、隐藏已拉黑；每张卡片可【连接】【测速】【拉黑】
-- **⚙️ 设置** — 代理、面板、VPN、节点源、过滤、调度策略、看门狗全部分组配置，拟物开关 / 下拉框，保存即时生效（换面板端口会自动跳转）；附黑名单管理
-- **📝 日志** — 圆角日志块，INFO / WARN / ERROR 柔和区分底色，支持搜索、级别过滤、导出
-- **🔐 登录** — 在设置里填写面板用户名和密码即启用登录（7 天会话）；不填则只用 token 访问
-- 访问需要 token（安装时自动生成，保存在 `/etc/Yu-proxy/config.json`，也可在设置里重新生成）
+- **📊 仪表盘** — 大状态卡（呼吸灯 + 模式标签 + 网格数据：国家/出口IP/延迟/在线时长/上下行）、网速曲线（可切 1/5/30 分钟）、快捷操作（一键连接/手动切换/强制重连/暂停/清空黑名单/断开/刷新节点）、多出口、最近事件
+- **🖥️ 节点** — 搜索 + 排序 + 隐藏已拉黑；磨砂节点卡片（国旗/延迟/带宽/评分/在线时长/成功率），优质绿色标、低质置灰、拉黑红色标；每张卡片可【连接】【测速】【拉黑】；附自定义 .ovpn 导入
+- **🔀 调度策略** — 二级菜单：基础调度（抓取间隔/探测间隔/健康检查频率/重试数）、节点筛选（国家白黑名单/最低带宽/最大延迟）、切换策略（模式/轮询间隔/强制换IP/风控检测）
+- **🌐 网络代理** — 代理服务（监听/端口/账号/隧道DNS/兜底/IP白名单）、Kill-switch 开关与放行规则
+- **🛡️ 安全与风控** — 面板安全（登录/Token）、黑名单管理、配置导入导出
+- **🔔 通知告警** — Telegram / Discord / 邮件 + 测试按钮
+- **📝 日志** — 搜索、级别彩色标签、导出、清空
+- **ℹ️ 关于/更新** — 版本信息、检查更新、**一键更新**（后台自动拉取重装，配置保留）
+- **🔐 登录** — 在面板安全里填写用户名和密码即启用登录（7 天会话）；不填则只用 token 访问
+- 访问需要 token（安装时自动生成，保存在 `/etc/Yu-proxy/config.json`，也可在面板安全里重新生成）
 
 ## 💻 命令行
 
@@ -129,6 +133,12 @@ python3 main.py status                 # 查看状态
 | POST | `/api/exit_start` `/api/exit_stop` `/api/exit_delete` `{"id"}` | 启停/删除出口 |
 | POST | `/api/probe` `{"id"}` | 探测指定节点 |
 | POST | `/api/blacklist_add` `/api/blacklist_remove` `{"id"}` | 拉黑/解除 |
+| POST | `/api/blacklist_clear` | 清空全部黑名单 |
+| POST | `/api/log_clear` | 清空系统日志 |
+| GET | `/api/config_export` | 导出配置 JSON（下载） |
+| POST | `/api/config_import` `{"config"}` | 导入配置并热应用 |
+| POST | `/api/update_check` | 检查 GitHub 新版本 |
+| POST | `/api/update` | 一键更新（后台重装并重启服务） |
 
 ```bash
 # 示例：查询状态 / 手动切换节点
@@ -164,6 +174,8 @@ curl -X POST "http://127.0.0.1:52051/api/rotate_now?token=YOUR_TOKEN"
 | `filter.countries_allow` | `[]` | 只用这些国家（ISO 代码，空=不限） |
 | `filter.countries_block` | `[]` | 排除这些国家 |
 | `filter.min_bandwidth_mbps` | `0` | 最低带宽（Mbps，0=不限） |
+| `filter.max_ping_ms` | `0` | 最大延迟（ms，0=不限） |
+| `watchdog.risk_detect` | `false` | 风控检测：出口 IP 遇 403/验证码自动切换 |
 | `scheduler.mode` | `failover` | `failover`=主备 / `rotate`=轮询 / `random`=权重随机 |
 | `scheduler.rotate_interval_min` | `30` | 轮询模式每隔多少分钟换节点 |
 | `scheduler.force_rotation_h` | `0` | 每 X 小时强制换出口 IP（0=关闭） |

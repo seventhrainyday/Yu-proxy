@@ -124,6 +124,20 @@ class NodeStore:
                 out.append(s)
         return out
 
+    def clear_all(self) -> int:
+        """清空全部黑名单（手动 + 临时），返回清理数量。"""
+        n = 0
+        for sid in list(self._data.keys()):
+            blacklisted, _ = self.is_blacklisted(sid)
+            if blacklisted:
+                n += 1
+            e = self._data[sid]
+            e.pop("manual_block", None)
+            e.pop("temp_block_until", None)
+        if n:
+            self._save()
+        return n
+
     def prune(self, keep: int = 5000) -> None:
         """防止文件无限膨胀，只保留最近活跃的记录。"""
         if len(self._data) <= keep:
