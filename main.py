@@ -42,9 +42,9 @@ DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 def default_config() -> dict:
     return {
         "data_dir": "/var/lib/Yu-proxy",
-        "panel": {"bind": "0.0.0.0", "port": 8787, "token": ""},
+        "panel": {"bind": "0.0.0.0", "port": 52051, "token": ""},
         "proxy": {
-            "bind": "0.0.0.0", "port": 7928,
+            "bind": "0.0.0.0", "port": 52052,
             "user": "", "pass": "",
             "dns_server": "8.8.8.8",
             "allow_direct_fallback": False,

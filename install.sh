@@ -60,9 +60,9 @@ try:
 except Exception:
     cfg = {}
 cfg.setdefault("data_dir", "/var/lib/Yu-proxy")
-cfg.setdefault("panel", {}).update({"bind": "0.0.0.0", "port": 8787})
+cfg.setdefault("panel", {}).update({"bind": "0.0.0.0", "port": 52051})
 cfg["panel"]["token"] = token
-cfg.setdefault("proxy", {}).setdefault("port", 7928)
+cfg.setdefault("proxy", {}).setdefault("port", 52052)
 cfg.setdefault("vpn", {}).setdefault("device", "tun0")
 json.dump(cfg, open(path, "w"), ensure_ascii=False, indent=2)
 EOF
@@ -79,12 +79,14 @@ sleep 3
 systemctl --no-pager --lines=5 status Yu-proxy.service || true
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+PANEL_PORT="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json'))['panel']['port'])")"
+PROXY_PORT="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json'))['proxy']['port'])")"
 echo ""
 echo "==================================================="
 echo " 安装成功！"
 echo ""
-echo " 管理面板：http://${IP:-<服务器IP>}:8787/?token=${TOKEN}"
-echo " 代理地址：${IP:-<服务器IP>}:7928"
+echo " 管理面板：http://${IP:-<服务器IP>}:${PANEL_PORT}/?token=${TOKEN}"
+echo " 代理地址：${IP:-<服务器IP>}:${PROXY_PORT}"
 echo "   （HTTP / HTTPS / SOCKS5 二合一，账号密码默认空）"
 echo ""
 echo " 常用命令："

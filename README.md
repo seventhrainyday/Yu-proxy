@@ -10,9 +10,9 @@ OpenVPN 隧道 + HTTP/SOCKS5 二合一出口 + Web 管理面板，
 **纯 Python 标准库 + OpenVPN，零 pip 依赖**，一个脚本一把梭。
 
 ```
-手机 / 电脑 / 电视 ──HTTP·SOCKS5──▶ VPS :7928 ──OpenVPN 隧道──▶ VPNGate 免费节点 ──▶ 互联网
+手机 / 电脑 / 电视 ──HTTP·SOCKS5──▶ VPS :52052 ──OpenVPN 隧道──▶ VPNGate 免费节点 ──▶ 互联网
                                           │
-                                          └─ 管理面板 :8787（节点列表 / 一键连接 / 日志）
+                                          └─ 管理面板 :52051（节点列表 / 一键连接 / 日志）
 ```
 
 ## ✨ 特性
@@ -47,14 +47,14 @@ sudo bash install.sh
 装完会打印：
 
 ```
-管理面板：http://<服务器IP>:8787/?token=xxxx
-代理地址：<服务器IP>:7928
+管理面板：http://<服务器IP>:52051/?token=xxxx
+代理地址：<服务器IP>:52052
 ```
 
-打开面板 → 点 **⚡ 一键连接最优** → 把设备的代理指向 `<服务器IP>:7928`，
+打开面板 → 点 **⚡ 一键连接最优** → 把设备的代理指向 `<服务器IP>:52052`，
 上网流量就走 VPNGate 隧道了。服务默认开机自动连接（`vpn.autoconnect`）。
 
-> 云厂商安全组记得放行 `8787`（面板）和 `7928`（代理）。
+> 云厂商安全组记得放行 `52051`（面板）和 `52052`（代理）。
 
 ## 🖥️ 管理面板
 
@@ -81,9 +81,9 @@ python3 main.py status                 # 查看状态
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `panel.bind` / `panel.port` | `0.0.0.0` / `8787` | 面板监听地址与端口 |
+| `panel.bind` / `panel.port` | `0.0.0.0` / `52051` | 面板监听地址与端口 |
 | `panel.token` | 自动生成 | 面板访问令牌，URL 参数或 `X-Token` 头 |
-| `proxy.bind` / `proxy.port` | `0.0.0.0` / `7928` | 代理监听地址与端口 |
+| `proxy.bind` / `proxy.port` | `0.0.0.0` / `52052` | 代理监听地址与端口 |
 | `proxy.user` / `proxy.pass` | 空 | 留空=不认证；填写后 HTTP Basic 与 SOCKS5 均要求认证 |
 | `proxy.dns_server` | `8.8.8.8` | 经隧道解析 DNS 用的上游 |
 | `proxy.allow_direct_fallback` | `false` | `true`=VPN 断开时代理直连兜底（默认拒绝，更安全） |
@@ -132,7 +132,7 @@ Yu-proxy 反其道而行：
 
 | 现象 | 排查 |
 |---|---|
-| 面板打不开 | `systemctl status Yu-proxy`；安全组放行 8787/7928 |
+| 面板打不开 | `systemctl status Yu-proxy`；安全组放行 52051/52052 |
 | 一直连不上节点 | 看面板日志：`TLS handshake failed` 多为运营商干扰，换 TCP 节点或等看门狗自动切 |
 | `operation not permitted` | 没给 TUN 权限（LXC / Docker 宿主机要开）或非 root 运行 |
 | 代理返回 `VPN is not connected yet.` | VPN 还没连上，等面板状态变绿；或开 `allow_direct_fallback` 临时直连 |
