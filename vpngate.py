@@ -91,7 +91,7 @@ def parse_servers(csv_text: str) -> list[dict[str, Any]]:
                 "country": row.get("CountryLong", "").strip(),
                 "country_short": row.get("CountryShort", "").strip().upper(),
                 "sessions": _to_int(row.get("NumVpnSessions")),
-                "uptime_s": _to_int(row.get("Uptime")),
+                "uptime_s": _to_int(row.get("Uptime")) // 1000,  # 官方单位是毫秒
                 "total_users": _to_int(row.get("TotalUsers")),
                 "log_type": row.get("LogType", "").strip(),
                 "operator": row.get("Operator", "").strip(),
@@ -196,6 +196,10 @@ def load_cache(data_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
     try:
         payload = json.loads(p.read_text(encoding="utf-8"))
         servers = payload.get("servers") or []
+        # 兼容旧版 bug：Uptime 曾被误当成秒（实际是毫秒），导致 uptime_s 膨胀 1000 倍
+        for s in servers:
+            if s.get("uptime_s", 0) > 365 * 86400:
+                s["uptime_s"] = s["uptime_s"] // 1000
         return servers, int(payload.get("fetched_at") or 0)
     except Exception:
         return [], 0
