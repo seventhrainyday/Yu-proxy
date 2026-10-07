@@ -18,8 +18,9 @@ fi
 
 # 2. 安装依赖：openvpn + iproute2 + python3
 install_deps() {
-  if command -v openvpn >/dev/null 2>&1 && command -v ip >/dev/null 2>&1; then
-    echo "[1/5] 依赖已就绪（openvpn / iproute2）"
+  if command -v openvpn >/dev/null 2>&1 && command -v ip >/dev/null 2>&1 \
+     && command -v python3 >/dev/null 2>&1; then
+    echo "[1/5] 依赖已就绪（openvpn / iproute2 / python3）"
     return
   fi
   echo "[1/5] 安装依赖…"
@@ -68,15 +69,33 @@ json.dump(cfg, open(path, "w"), ensure_ascii=False, indent=2)
 EOF
 chmod 600 "$CONFIG_DIR/config.json"
 
-# 5. 安装 systemd 服务
+# 5. 注册系统服务（自动识别 systemd / OpenRC）
 echo "[4/5] 注册系统服务"
-cp "$SRC_DIR/Yu-proxy.service" /etc/systemd/system/Yu-proxy.service
-systemctl daemon-reload
-systemctl enable --now Yu-proxy.service
+INIT="none"
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  INIT="systemd"
+  mkdir -p /etc/systemd/system
+  cp "$SRC_DIR/Yu-proxy.service" /etc/systemd/system/Yu-proxy.service
+  systemctl daemon-reload
+  systemctl enable --now Yu-proxy.service
+elif command -v rc-update >/dev/null 2>&1; then
+  INIT="openrc"
+  cp "$SRC_DIR/Yu-proxy.openrc" /etc/init.d/Yu-proxy
+  chmod +x /etc/init.d/Yu-proxy
+  rc-update add Yu-proxy default >/dev/null
+  rc-service Yu-proxy restart
+else
+  echo "未检测到 systemd / OpenRC，跳过服务注册。"
+  echo "可手动运行：/usr/bin/python3 /opt/Yu-proxy/main.py daemon -c /etc/Yu-proxy/config.json"
+fi
 
 echo "[5/5] 启动完成，等待服务就绪…"
 sleep 3
-systemctl --no-pager --lines=5 status Yu-proxy.service || true
+if [ "$INIT" = "systemd" ]; then
+  systemctl --no-pager --lines=5 status Yu-proxy.service || true
+elif [ "$INIT" = "openrc" ]; then
+  rc-service Yu-proxy status || true
+fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 PANEL_PORT="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json'))['panel']['port'])")"
@@ -90,9 +109,16 @@ echo " 代理地址：${IP:-<服务器IP>}:${PROXY_PORT}"
 echo "   （HTTP / HTTPS / SOCKS5 二合一，账号密码默认空）"
 echo ""
 echo " 常用命令："
-echo "   查看状态  systemctl status Yu-proxy"
-echo "   看日志    journalctl -u Yu-proxy -f"
-echo "   重启服务  systemctl restart Yu-proxy"
-echo "   改配置后  systemctl restart Yu-proxy"
+if [ "$INIT" = "openrc" ]; then
+  echo "   查看状态  rc-service Yu-proxy status"
+  echo "   看日志    tail -f /var/log/yu-proxy.log"
+  echo "   重启服务  rc-service Yu-proxy restart"
+  echo "   改配置后  rc-service Yu-proxy restart"
+else
+  echo "   查看状态  systemctl status Yu-proxy"
+  echo "   看日志    journalctl -u Yu-proxy -f"
+  echo "   重启服务  systemctl restart Yu-proxy"
+  echo "   改配置后  systemctl restart Yu-proxy"
+fi
 echo "==================================================="
 echo "面板 token 已写入 $CONFIG_DIR/config.json，请妥善保管。"

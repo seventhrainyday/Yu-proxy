@@ -29,6 +29,7 @@ OpenVPN 隧道 + HTTP/SOCKS5 二合一出口 + Web 管理面板，
 
 要求：Linux（Debian / Ubuntu / CentOS / Alpine）、root、Python 3.8+、
 VPS 支持 TUN（`ls /dev/net/tun` 能看到设备节点）。
+Debian 系用 systemd，Alpine 用 OpenRC，安装脚本自动识别。
 
 ```bash
 # 一键安装（在 VPS 上粘贴这一行执行，需 root）
@@ -105,7 +106,8 @@ vpnctl.py          OpenVPN 进程管理（route-nopull 保 SSH）+ 看门狗
 proxy.py           HTTP/CONNECT + SOCKS5 转发代理（出站绑 tun）
 panel.py           Web 管理面板（单文件 http.server + 内嵌前端）
 config.json        配置示例
-Yu-proxy.service   systemd 单元
+Yu-proxy.service   systemd 单元（Debian / Ubuntu / CentOS）
+Yu-proxy.openrc    OpenRC 服务脚本（Alpine）
 install.sh         一键安装脚本（本地）
 install-remote.sh  远程一键安装：bash <(curl -sSL https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/install-remote.sh)
 ```

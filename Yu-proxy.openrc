@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Yu-proxy: VPNGate 免费节点代理网关（OpenRC 服务脚本，用于 Alpine 等）
+
+description="Yu-proxy - VPNGate proxy gateway"
+command="/usr/bin/python3"
+command_args="/opt/Yu-proxy/main.py daemon -c /etc/Yu-proxy/config.json"
+command_background="yes"
+pidfile="/run/yu-proxy.pid"
+output_log="/var/log/yu-proxy.log"
+error_log="/var/log/yu-proxy.log"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    checkpath -f -m 644 "$output_log"
+}
