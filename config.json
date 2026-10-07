@@ -51,5 +51,34 @@
     "mode": "failover",
     "rotate_interval_min": 30,
     "force_rotation_h": 0
+  },
+  "killswitch": {
+    "enabled": false,
+    "allow_hosts": []
+  },
+  "notify": {
+    "telegram": {
+      "enabled": false,
+      "bot_token": "",
+      "chat_id": ""
+    },
+    "discord": {
+      "enabled": false,
+      "webhook_url": ""
+    },
+    "email": {
+      "enabled": false,
+      "smtp_host": "",
+      "smtp_port": 465,
+      "smtp_user": "",
+      "smtp_pass": "",
+      "from": "",
+      "to": ""
+    },
+    "events": {
+      "switch": true,
+      "fail": true,
+      "recover": true
+    }
   }
 }

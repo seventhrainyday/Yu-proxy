@@ -138,10 +138,11 @@ button:disabled{opacity:.5;cursor:default;transform:none}
 .set-group h3{margin:0 0 12px;font-size:15px}
 .set-row{margin-bottom:12px}
 .set-row label{display:block;font-size:13px;margin-bottom:6px;color:var(--dim)}
-.set-row input[type=text],.set-row input[type=number],.set-row input[type=password],.set-row select{
+.set-row input[type=text],.set-row input[type=number],.set-row input[type=password],.set-row select,.set-row textarea{
   width:100%;background:var(--card);border:none;color:var(--txt);border-radius:12px;
   padding:10px 14px;font-size:14px;font-family:inherit;outline:none;
   box-shadow:inset 4px 4px 9px var(--in-d),inset -4px -4px 9px var(--in-l)}
+.set-row textarea{resize:vertical;font-family:monospace;font-size:12px}
 .set-row input[type=checkbox]{display:none}
 .toggle{position:relative;display:inline-block;width:52px;height:30px;border-radius:999px;cursor:pointer;
   background:var(--card);box-shadow:inset 4px 4px 8px var(--in-d),inset -4px -4px 8px var(--in-l);
@@ -200,6 +201,7 @@ button:disabled{opacity:.5;cursor:default;transform:none}
         <span class="status-title" id="st-title">加载中…</span>
         <span class="badge" id="st-mode" style="display:none"></span>
         <span class="badge warn" id="st-paused" style="display:none">已暂停自动切换</span>
+        <span class="badge ok" id="st-ks" style="display:none">🛡️ Kill-switch 生效中</span>
       </div>
       <div class="status-grid">
         <div class="stat"><div class="stat-label">出口节点</div><div class="stat-val" id="st-node">-</div></div>
@@ -228,6 +230,23 @@ button:disabled{opacity:.5;cursor:default;transform:none}
       <div class="note" id="proxy-info"></div>
     </div>
     <div class="card">
+      <h2>🛡️ Kill-switch</h2>
+      <div class="note" id="ks-info">加载中…</div>
+      <div class="btnrow">
+        <button id="btn-ks" onclick="toggleKillswitch()">启用 Kill-switch</button>
+      </div>
+      <div class="note">隧道中断时阻断本机所有非隧道新建出站（只动 OUTPUT 链，SSH/面板不受影响）。VPNGate API 自动放行保证节点可刷新。</div>
+    </div>
+    <div class="card">
+      <h2>🔌 多出口</h2>
+      <div class="note">每条出口是独立隧道 + 独立代理端口，可分给不同设备使用。</div>
+      <div id="exits">加载中…</div>
+      <div class="btnrow">
+        <input id="exit-port" type="number" placeholder="代理端口，如 52053" style="width:180px">
+        <button class="primary" onclick="exitAdd()">➕ 新增出口</button>
+      </div>
+    </div>
+    <div class="card">
       <h2>最近事件</h2>
       <div id="events">加载中…</div>
     </div>
@@ -250,8 +269,16 @@ button:disabled{opacity:.5;cursor:default;transform:none}
 
   <section id="tab-settings" class="tabpage" hidden>
     <div id="settings-body"></div>
-    <div class="btnrow"><button class="primary big" id="btn-save" onclick="saveSettings()">💾 保存设置</button></div>
+    <div class="btnrow"><button class="primary big" id="btn-save" onclick="saveSettings()">💾 保存设置</button>
+      <button onclick="testNotify()">📨 发送测试通知</button></div>
     <div class="note" id="settings-msg"></div>
+    <div class="set-group"><h3>📦 自定义节点（.ovpn 导入）</h3>
+      <div class="note">粘贴 OpenVPN 配置内容导入，导入后进入统一调度池（参与一键连接/自动切换/多出口）。</div>
+      <div class="set-row"><label>节点名称</label><input id="cn-name" placeholder="例如 my-vps"></div>
+      <div class="set-row"><label>.ovpn 内容</label><textarea id="cn-content" rows="6" placeholder="client&#10;dev tun&#10;proto tcp&#10;remote xxx 1194&#10;..."></textarea></div>
+      <div class="btnrow"><button class="primary" onclick="customAdd()">📥 导入节点</button></div>
+      <div id="custom-list">加载中…</div>
+    </div>
     <div class="set-group"><h3>🚫 黑名单管理</h3><div id="blacklist">加载中…</div></div>
   </section>
 
@@ -341,7 +368,7 @@ function switchTab(name) {
   document.querySelectorAll('.tabpage').forEach(s => s.hidden = s.id !== 'tab-' + name);
   if (name === 'nodes' && !servers.length) loadNodes();
   if (name === 'settings' && !curConfig) openSettings();
-  if (name === 'settings') loadBlacklist();
+  if (name === 'settings') { loadBlacklist(); loadCustom(); }
   if (name === 'logs' && !logLines.length) loadLog();
   if (name === 'dash') { loadEvents(); }
 }
@@ -379,6 +406,16 @@ async function loadStatus() {
       + (s.proxy.auth ? ' · 已启用账号认证' : '')
       + ' · 累计 ' + fmtBytes(s.proxy.down_bytes) + ' / ' + fmtBytes(s.proxy.up_bytes);
     document.getElementById('btn-logout').style.display = s.login_enabled ? '' : 'none';
+    // kill-switch
+    const ks = s.killswitch || {};
+    document.getElementById('st-ks').style.display = ks.active ? '' : 'none';
+    document.getElementById('ks-info').textContent =
+      !ks.available ? '本机没有 iptables，kill-switch 不可用' :
+      ks.active ? '生效中：非隧道新建出站已被阻断' :
+      (ks.enabled ? '已启用但规则未生效（见日志）' : '未启用');
+    document.getElementById('btn-ks').textContent =
+      ks.active ? '关闭 Kill-switch' : '启用 Kill-switch';
+    loadExits();
   } catch(e) {
     if (/401/.test(e.message)) location.href = '/login';
   }
@@ -423,7 +460,7 @@ function drawChart() {
   line(2, css('--primary'));
   line(1, css('--green'));
 }
-const EV_ICON = {connect:'✅', disconnect:'🔌', switch:'🔀', fail:'⚠️', block:'🚫', unblock:'♻️', pause:'⏸', resume:'▶', refresh:'🔄'};
+const EV_ICON = {connect:'✅', disconnect:'🔌', switch:'🔀', fail:'⚠️', block:'🚫', unblock:'♻️', pause:'⏸', resume:'▶', refresh:'🔄', custom:'📦', exit:'🔌'};
 async function loadEvents() {
   try {
     const r = await api('/api/events');
@@ -480,6 +517,128 @@ async function refreshServers() {
 }
 function logout() { location.href = '/logout'; }
 
+/* ---------- Kill-switch ---------- */
+async function toggleKillswitch() {
+  const el = document.getElementById('st-ks');
+  const enable = el.style.display === 'none';
+  if (enable && !confirm('启用 Kill-switch？\\n\\n启用后隧道中断时本机所有非隧道新建出站将被阻断（只动 OUTPUT 链，SSH/面板不受影响）。')) return;
+  try {
+    const r = await api('/api/killswitch', 'POST', {enabled: enable});
+    if (!r.ok) throw new Error(r.error || '操作失败');
+    toast(enable ? 'Kill-switch 已启用' : 'Kill-switch 已关闭', 'ok');
+  } catch(e) { toast('失败：' + e.message, 'err'); }
+  loadStatus();
+}
+
+/* ---------- 通知 ---------- */
+async function testNotify() {
+  try {
+    const r = await api('/api/notify_test', 'POST', {});
+    if (!r.ok) throw new Error(r.error || '发送失败');
+    const ch = r.channels || {};
+    const on = Object.keys(ch).filter(k => ch[k]).join('、') || '无';
+    toast('测试通知已发送（' + on + '）', 'ok');
+  } catch(e) { toast('失败：' + e.message, 'err'); }
+}
+
+/* ---------- 自定义节点 ---------- */
+async function loadCustom() {
+  const el = document.getElementById('custom-list');
+  try {
+    const r = await api('/api/custom_list');
+    if (!r.ok) throw new Error(r.error || '读取失败');
+    const ns = r.nodes || [];
+    el.innerHTML = ns.length ? ns.map(n =>
+      '<div class="ev"><span>📦 ' + esc(n.name) + ' <span class="dim">' + esc(n.ip) + ' · ' + esc(n.proto) + '</span></span>'
+      + '<span class="ev-act"><button class="mini" onclick="customDelete(\\'' + esc(n.id) + '\\')">删除</button></span></div>'
+    ).join('') : '<div class="empty">暂无自定义节点</div>';
+  } catch(e) { el.innerHTML = '<div class="empty">读取失败</div>'; }
+}
+async function customAdd() {
+  const name = document.getElementById('cn-name').value.trim();
+  const content = document.getElementById('cn-content').value.trim();
+  if (!content) { toast('请粘贴 .ovpn 内容', 'err'); return; }
+  try {
+    const r = await api('/api/custom_add', 'POST', {name: name || 'node', content});
+    if (!r.ok) throw new Error(r.error || '导入失败');
+    toast('导入成功：' + r.file, 'ok');
+    document.getElementById('cn-name').value = '';
+    document.getElementById('cn-content').value = '';
+    loadCustom(); loadNodes(true);
+  } catch(e) { toast('导入失败：' + e.message, 'err'); }
+}
+async function customDelete(id) {
+  const r = await api('/api/custom_list');
+  const n = (r.nodes || []).find(x => x.id === id);
+  if (!n || !confirm('删除自定义节点 ' + n.name + '？')) return;
+  try {
+    const rr = await api('/api/custom_delete', 'POST', {file: n.file});
+    if (!rr.ok) throw new Error(rr.error || '删除失败');
+    toast('已删除', 'ok'); loadCustom(); loadNodes(true);
+  } catch(e) { toast('删除失败：' + e.message, 'err'); }
+}
+
+/* ---------- 多出口 ---------- */
+async function loadExits() {
+  const el = document.getElementById('exits');
+  if (!el) return;
+  try {
+    const r = await api('/api/exits');
+    if (!r.ok) throw new Error(r.error || '读取失败');
+    const xs = r.exits || [];
+    el.innerHTML = xs.length ? xs.map(x => {
+      const v = x.vpn || {};
+      const st = x.running
+        ? (v.connected ? '🟢 ' + esc(v.country_zh || '') + ' ' + esc(v.server_ip || '') : '🟡 启动中…')
+        : '⚪ 已停止';
+      return '<div class="ev"><span><b>' + esc(x.id) + '</b> <span class="dim">'
+        + esc(x.device) + ' · 代理 :' + x.proxy_port + ' · ' + st + '</span></span>'
+        + '<span class="ev-act">'
+        + (x.running
+          ? '<button class="mini" onclick="exitStop(\\'' + esc(x.id) + '\\')">停止</button>'
+          : '<button class="mini" onclick="exitStart(\\'' + esc(x.id) + '\\')">启动</button>')
+        + '<button class="mini danger" onclick="exitDelete(\\'' + esc(x.id) + '\\')">删除</button>'
+        + '</span></div>';
+    }).join('') : '<div class="empty">暂无出口，点击下方新增</div>';
+  } catch(e) { el.innerHTML = '<div class="empty">读取失败</div>'; }
+}
+async function exitAdd() {
+  const port = parseInt(document.getElementById('exit-port').value, 10);
+  if (!port) { toast('请输入代理端口', 'err'); return; }
+  try {
+    const r = await api('/api/exit_add', 'POST', {port});
+    if (!r.ok) throw new Error(r.error || '新增失败');
+    toast('出口已新增：' + r.exit.id, 'ok');
+    document.getElementById('exit-port').value = '';
+    loadExits();
+  } catch(e) { toast('新增失败：' + e.message, 'err'); }
+}
+async function exitStart(id) {
+  try {
+    const r = await api('/api/exit_start', 'POST', {id});
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    toast(r.msg || '已启动', 'ok');
+  } catch(e) { toast('启动失败：' + e.message, 'err'); }
+  loadExits();
+}
+async function exitStop(id) {
+  try {
+    const r = await api('/api/exit_stop', 'POST', {id});
+    if (!r.ok) throw new Error(r.error || '停止失败');
+    toast('已停止', 'ok');
+  } catch(e) { toast('停止失败：' + e.message, 'err'); }
+  loadExits();
+}
+async function exitDelete(id) {
+  if (!confirm('删除出口 ' + id + '？（会停止其隧道与代理）')) return;
+  try {
+    const r = await api('/api/exit_delete', 'POST', {id});
+    if (!r.ok) throw new Error(r.error || '删除失败');
+    toast('已删除', 'ok');
+  } catch(e) { toast('删除失败：' + e.message, 'err'); }
+  loadExits();
+}
+
 /* ---------- 节点列表 ---------- */
 let servers = [];
 async function loadNodes(force) {
@@ -512,6 +671,7 @@ function renderNodes() {
   box.innerHTML = list.slice(0, 200).map(s => {
     const rate = s.success_rate == null ? '无记录' : Math.round(s.success_rate * 100) + '%';
     const badges = [];
+    if (s.custom) badges.push('<span class="badge">📦 自定义</span>');
     if (s.score >= 800) badges.push('<span class="badge ok">高分</span>');
     if (s.blacklisted) badges.push('<span class="badge bad">' + (s.blacklist_reason === 'manual' ? '已拉黑' : '临时拉黑') + '</span>');
     const actions = s.blacklisted && s.blacklist_reason === 'manual'
@@ -617,9 +777,30 @@ const SETTING_FIELDS = [
     ['watchdog.fail_threshold','连续失败几次后切换','number'],
     ['watchdog.max_retries','每次故障最多试几个节点','number'],
   ]},
+  {title:'🛡️ Kill-switch（防泄漏）', fields:[
+    ['killswitch.enabled','启用：隧道中断时阻断本机非隧道出站（只动 OUTPUT 链，SSH/面板不受影响）','checkbox'],
+    ['killswitch.allow_hosts','额外放行域名（逗号分隔，VPNGate API 自动放行）','text'],
+  ]},
+  {title:'🔔 告警通知', fields:[
+    ['notify.telegram.enabled','Telegram 启用','checkbox'],
+    ['notify.telegram.bot_token','Telegram Bot Token','text'],
+    ['notify.telegram.chat_id','Telegram Chat ID','text'],
+    ['notify.discord.enabled','Discord 启用','checkbox'],
+    ['notify.discord.webhook_url','Discord Webhook URL','text'],
+    ['notify.email.enabled','邮件启用','checkbox'],
+    ['notify.email.smtp_host','SMTP 服务器','text'],
+    ['notify.email.smtp_port','SMTP 端口','number'],
+    ['notify.email.smtp_user','SMTP 用户名','text'],
+    ['notify.email.smtp_pass','SMTP 密码','password'],
+    ['notify.email.from','发件人','text'],
+    ['notify.email.to','收件人','text'],
+    ['notify.events.switch','节点切换时通知','checkbox'],
+    ['notify.events.fail','连接故障时通知','checkbox'],
+    ['notify.events.recover','连接恢复时通知','checkbox'],
+  ]},
 ];
-const LIST_FIELDS = ['vpn.prefer_countries','filter.countries_allow','filter.countries_block','vpngate.api_urls','proxy.allow_ips'];
-const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','filter.min_bandwidth_mbps','scheduler.rotate_interval_min','watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries'];
+const LIST_FIELDS = ['vpn.prefer_countries','filter.countries_allow','filter.countries_block','vpngate.api_urls','proxy.allow_ips','killswitch.allow_hosts'];
+const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','filter.min_bandwidth_mbps','scheduler.rotate_interval_min','watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries','notify.email.smtp_port'];
 const FLOAT_FIELDS = ['scheduler.force_rotation_h'];
 function cfgGet(cfg, path) { return path.split('.').reduce((o,k) => (o == null ? null : o[k]), cfg); }
 function cfgSet(cfg, path, val) {
@@ -939,6 +1120,13 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["events"]())
             elif path == "/api/throughput":
                 self._json(self.hooks["throughput"]())
+            elif path == "/api/exits":
+                self._json(self.hooks["exits"]())
+            elif path == "/api/custom_list":
+                self._json(self.hooks["custom_list"]())
+            elif path == "/metrics":
+                self._send(200, self.hooks["metrics"]().encode("utf-8"),
+                           "text/plain; version=0.0.4")
             elif path == "/api/log":
                 qs = urllib.parse.parse_qs(parsed.query)
                 try:
@@ -1004,6 +1192,22 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["probe"](body.get("id")))
             elif path == "/api/rotate_now":
                 self._json(self.hooks["rotate_now"]())
+            elif path == "/api/killswitch":
+                self._json(self.hooks["killswitch"](body))
+            elif path == "/api/notify_test":
+                self._json(self.hooks["notify_test"]())
+            elif path == "/api/custom_add":
+                self._json(self.hooks["custom_add"](body))
+            elif path == "/api/custom_delete":
+                self._json(self.hooks["custom_delete"](body))
+            elif path == "/api/exit_add":
+                self._json(self.hooks["exit_add"](body))
+            elif path == "/api/exit_start":
+                self._json(self.hooks["exit_start"](body))
+            elif path == "/api/exit_stop":
+                self._json(self.hooks["exit_stop"](body))
+            elif path == "/api/exit_delete":
+                self._json(self.hooks["exit_delete"](body))
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
         except Exception as e:

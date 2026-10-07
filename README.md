@@ -23,10 +23,16 @@ OpenVPN 隧道 + HTTP/SOCKS5 二合一出口 + Web 管理面板，
 - **调度策略** — 主备 / 定时轮询 / 权重随机三种模式，可强制每 X 小时换出口 IP
 - **多层健康检查** — TCP 连通性 + 真实外网探测（防"假连通"：隧道连上但上不了网），连续不健康自动切换
 - **节点画像** — 每个节点的历史连接成功率持久化，失败节点自动临时拉黑，支持手动永久拉黑/解除
+- **🛡️ Kill-switch** — 可选：隧道中断时阻断本机所有非隧道新建出站（只动 OUTPUT 链，SSH/面板不受影响），防真实 IP 泄漏
+- **🔔 告警通知** — 节点切换 / 连接故障 / 恢复时推送 Telegram / Discord / 邮件（面板可发送测试）
+- **📦 自定义节点** — 面板粘贴 .ovpn 直接导入，进入统一调度池（参与一键连接、自动切换、多出口）
+- **🔌 多出口** — 可建多条独立隧道，每条独立 tun 网卡 + 独立代理端口，分给不同设备用，各自有看门狗
+- **📊 Prometheus** — `/metrics` 暴露连接状态、流量、节点数等指标（token 鉴权）
 - **SSH 安全** — OpenVPN 强制 `route-nopull` 不碰系统主路由表，上行流量经 `SO_BINDTODEVICE` 绑定 tun 网卡，SSH 和面板永不断连
 - **DNS 走隧道** — 域名解析手工经隧道发包，不泄漏、不污染
 - **故障自愈** — 看门狗定期探测，连续失败自动换节点重连
 - **断网保护** — VPN 未连接时代理直接拒绝（502），流量不会裸奔（可配直连兜底）
+- **Docker** — 提供 Dockerfile + docker-compose 一键部署
 
 ## 🚀 快速开始
 
@@ -46,6 +52,19 @@ bash <(curl -sSL https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main
 # 把本仓库传到 VPS 并解压，然后：
 sudo bash install.sh
 ```
+</details>
+
+<details>
+<summary>Docker 部署</summary>
+
+```bash
+git clone https://github.com/seventhrainyday/Yu-proxy.git
+cd Yu-proxy
+# 先按需改 config.json（token 等），然后：
+docker compose up -d
+```
+
+需要宿主机支持 TUN（`ls /dev/net/tun`），compose 已配置 `NET_ADMIN` 权限与 tun 设备映射。
 </details>
 
 装完会打印：
@@ -83,6 +102,40 @@ python3 main.py disconnect             # 断开 VPN
 python3 main.py status                 # 查看状态
 ```
 
+## 🔌 REST API
+
+面板端口即 API 端口，鉴权：URL 参数 `?token=xxx` 或请求头 `X-Token: xxx`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/status` | 状态：VPN 连接、代理流量、kill-switch、健康检查 |
+| GET | `/api/servers` | 节点列表（含自定义节点、成功率、拉黑状态） |
+| GET | `/api/throughput` | 最近 6 分钟网速采样（上/下行 bps） |
+| GET | `/api/events` | 最近事件（连接/切换/故障） |
+| GET | `/api/exits` | 多出口列表 |
+| GET | `/api/custom_list` | 自定义节点列表 |
+| GET | `/metrics` | Prometheus 指标 |
+| POST | `/api/connect_best` | 一键连接最优节点（自动顺延） |
+| POST | `/api/connect` `{"id"}` | 连接指定节点 |
+| POST | `/api/disconnect` | 断开 VPN |
+| POST | `/api/rotate_now` | 立即切换节点 |
+| POST | `/api/refresh` | 刷新节点缓存 |
+| POST | `/api/pause` `/api/resume` | 暂停/恢复自动切换 |
+| POST | `/api/killswitch` `{"enabled":bool}` | 开关 kill-switch |
+| POST | `/api/notify_test` | 发送测试通知 |
+| POST | `/api/custom_add` `{"name","content"}` | 导入 .ovpn 节点 |
+| POST | `/api/custom_delete` `{"file"}` | 删除自定义节点 |
+| POST | `/api/exit_add` `{"port"}` | 新增出口（独立代理端口） |
+| POST | `/api/exit_start` `/api/exit_stop` `/api/exit_delete` `{"id"}` | 启停/删除出口 |
+| POST | `/api/probe` `{"id"}` | 探测指定节点 |
+| POST | `/api/blacklist_add` `/api/blacklist_remove` `{"id"}` | 拉黑/解除 |
+
+```bash
+# 示例：查询状态 / 手动切换节点
+curl "http://127.0.0.1:52051/api/status?token=YOUR_TOKEN"
+curl -X POST "http://127.0.0.1:52051/api/rotate_now?token=YOUR_TOKEN"
+```
+
 ## ⚙️ 配置
 
 编辑 `/etc/Yu-proxy/config.json` 后 `systemctl restart Yu-proxy`：
@@ -115,6 +168,9 @@ python3 main.py status                 # 查看状态
 | `scheduler.rotate_interval_min` | `30` | 轮询模式每隔多少分钟换节点 |
 | `scheduler.force_rotation_h` | `0` | 每 X 小时强制换出口 IP（0=关闭） |
 | `proxy.allow_ips` | `[]` | 代理来源 IP 白名单（空=不限制） |
+| `killswitch.enabled` | `false` | 隧道中断时阻断本机非隧道出站（防泄漏） |
+| `killswitch.allow_hosts` | `[]` | 额外放行的域名（VPNGate API 自动放行） |
+| `notify.telegram` / `notify.discord` / `notify.email` | 关闭 | 告警通道配置，事件开关在 `notify.events` |
 
 ## 📁 文件结构
 
@@ -126,7 +182,12 @@ proxy.py           HTTP/CONNECT + SOCKS5 转发代理（出站绑 tun，支持 I
 panel.py           Web 管理面板（单文件 http.server + 内嵌前端）
 nodestore.py       节点统计与黑名单持久化
 health.py          多层健康检查（TCP / 真实 HTTP 探测）
+killswitch.py      Kill-switch：iptables 阻断非隧道出站
+notify.py          告警通知（Telegram / Discord / 邮件）
+exits.py           多出口管理（独立隧道 + 独立代理端口）
 config.json        配置示例
+Dockerfile         Docker 镜像构建
+docker-compose.yml Docker 一键部署
 Yu-proxy.service   systemd 单元（Debian / Ubuntu / CentOS）
 Yu-proxy.openrc    OpenRC 服务脚本（Alpine）
 install.sh         一键安装脚本（本地）
@@ -171,9 +232,15 @@ VPNGate 是志愿者提供的免费节点，速度和稳定性无保障，
 
 ## 🗺️ 路线图
 
-- [ ] 多出口（一个节点一个代理端口）
-- [ ] 节点连通性探测与测速
+- [x] 多出口（一个节点一个代理端口）
+- [x] 节点连通性探测与测速
+- [x] Kill-switch 防泄漏
+- [x] 告警通知（Telegram/Discord/邮件）
+- [x] 自定义 .ovpn 节点导入
+- [x] Prometheus 监控
 - [ ] 流量每日统计与推送
+- [ ] 国内/国外分流（需 GeoIP 库）
+- [ ] 真正的策略路由多隧道负载均衡（高风险，谨慎）
 
 ## 📄 许可证
 

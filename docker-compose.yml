@@ -1,0 +1,26 @@
+# Yu-proxy docker-compose 一键部署
+#
+#   docker compose up -d
+#
+# 面板: http://<宿主机IP>:52051/?token=<config.json 里 panel.token>
+# 代理: <宿主机IP>:52052（HTTP / HTTPS CONNECT / SOCKS5 三合一）
+services:
+  yu-proxy:
+    build: .
+    container_name: yu-proxy
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN          # OpenVPN 需要
+    devices:
+      - /dev/net/tun      # OpenVPN 需要
+    ports:
+      - "52051:52051"     # 管理面板
+      - "52052:52052"     # 代理端口
+    volumes:
+      - ./config.json:/etc/Yu-proxy/config.json:ro
+      - yu-data:/var/lib/Yu-proxy
+    sysctls:
+      net.ipv4.ip_forward: "1"
+
+volumes:
+  yu-data:

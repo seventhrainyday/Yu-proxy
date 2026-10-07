@@ -17,6 +17,7 @@ main.py — Yu-proxy 主入口
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -33,13 +34,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
 from health import HealthChecker, tcp_ping
+from killswitch import KillSwitch
 from nodestore import NodeStore
+from notify import Notifier
+from exits import ExitManager
 from vpnctl import VPNController, Watchdog
 from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -80,6 +84,18 @@ def default_config() -> dict:
             "mode": "failover",
             "rotate_interval_min": 30,
             "force_rotation_h": 0,
+        },
+        "killswitch": {
+            "enabled": False,
+            "allow_hosts": [],
+        },
+        "notify": {
+            "telegram": {"enabled": False, "bot_token": "", "chat_id": ""},
+            "discord": {"enabled": False, "webhook_url": ""},
+            "email": {"enabled": False, "smtp_host": "", "smtp_port": 465,
+                      "smtp_user": "", "smtp_pass": "",
+                      "from": "", "to": ""},
+            "events": {"switch": True, "fail": True, "recover": True},
         },
     }
 
@@ -169,6 +185,14 @@ def validate_config(cfg: dict) -> str | None:
             return "vpngate.api_urls 不能为空"
         if float(cfg["vpngate"].get("refresh_interval_h", 6)) < 1:
             return "vpngate.refresh_interval_h 不能小于 1 小时"
+        if not isinstance(cfg["killswitch"].get("allow_hosts"), list):
+            return "killswitch.allow_hosts 须为列表"
+        nt = cfg["notify"]
+        for ch in ("telegram", "discord", "email"):
+            if not isinstance(nt.get(ch), dict):
+                return f"notify.{ch} 须为对象"
+        if not isinstance(nt.get("events"), dict):
+            return "notify.events 须为对象"
     except (KeyError, TypeError, ValueError):
         return "配置格式错误"
     return None
@@ -187,6 +211,40 @@ def _summarize_error(exc: Exception) -> str:
                       "", last)
         return last[:300]
     return "连接失败"
+
+
+def load_custom_nodes(data_dir: str | Path) -> list[dict]:
+    """读取 data_dir/custom/ 下的 *.ovpn，拼成统一调度池的节点。"""
+    import hashlib
+    out = []
+    cdir = Path(data_dir) / "custom"
+    if not cdir.is_dir():
+        return out
+    for p in sorted(cdir.glob("*.ovpn")):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if "remote" not in text:
+                continue
+            b64 = base64.b64encode(text.encode("utf-8")).decode()
+            sid = "custom-" + hashlib.sha1(
+                (p.name + text).encode()).hexdigest()[:12]
+            try:
+                r = vpngate.detect_remote(b64, "")
+                ip, proto = r["host"], r["proto"]
+            except Exception:
+                ip, proto = "", "tcp"
+            out.append({
+                "id": sid, "ip": ip,
+                "country": "自定义", "country_zh": "自定义",
+                "country_short": "XX",
+                "ping": 0, "score": 500, "speed_bps": 0,
+                "sessions": 0, "proto": proto or "tcp",
+                "uptime_s": 0, "config_b64": b64,
+                "custom": True, "custom_name": p.stem,
+            })
+        except Exception:
+            continue
+    return out
 
 
 # ---------------- 守护进程 ----------------
@@ -232,6 +290,21 @@ class Daemon:
         # 调度状态
         self._exit_ip = ""
         self._last_health: dict | None = None
+
+        # Kill-switch：阻断非隧道出站
+        self.ks = KillSwitch(log=self.log)
+        # 告警通知
+        self.notifier = Notifier(self.cfg.get("notify"), log=self.log)
+        # 多出口
+        proxy_cfg = self.cfg["proxy"]
+        auth = None
+        if proxy_cfg.get("user"):
+            auth = (proxy_cfg["user"], proxy_cfg.get("pass", ""))
+        self.exit_manager = ExitManager(
+            self.data_dir, proxy_cfg.get("bind", "0.0.0.0"),
+            pick_server=self._pick_server,
+            dns_server=proxy_cfg.get("dns_server", "8.8.8.8"),
+            auth=auth, event_fn=self._watchdog_event, log=self.log)
 
     def _build_proxy(self) -> None:
         proxy_cfg = self.cfg["proxy"]
@@ -308,6 +381,13 @@ class Daemon:
         })
         self._save_events()
         self.log(f"[event] {msg}")
+        # 告警通知：切换/故障/恢复
+        if etype == "switch":
+            self.notifier.send("switch", "节点切换", msg)
+        elif etype == "fail":
+            self.notifier.send("fail", "连接故障", msg)
+        elif etype == "connect":
+            self.notifier.send("recover", "连接恢复", msg)
 
     def _watchdog_event(self, etype: str, msg: str,
                         server_id: str | None = None) -> None:
@@ -371,10 +451,21 @@ class Daemon:
             "resume": self._hook_resume,
             "probe": self._hook_probe,
             "rotate_now": self._hook_rotate_now,
+            "killswitch": self._hook_killswitch,
+            "notify_test": self._hook_notify_test,
+            "custom_list": self._hook_custom_list,
+            "custom_add": self._hook_custom_add,
+            "custom_delete": self._hook_custom_delete,
+            "exits": self._hook_exits,
+            "exit_add": self._hook_exit_add,
+            "exit_start": self._hook_exit_start,
+            "exit_stop": self._hook_exit_stop,
+            "exit_delete": self._hook_exit_delete,
+            "metrics": self._hook_metrics,
         }
 
     def _hook_status(self) -> dict:
-        servers, cached_at = vpngate.load_cache(self.data_dir)
+        servers = self._all_servers()
         vpn_status = self.controller.status()
         if vpn_status.get("connected_at"):
             vpn_status["uptime_s"] = \
@@ -392,7 +483,6 @@ class Daemon:
                 "down_bytes": pstat["rx"],
             },
             "server_count": len(servers),
-            "cache_at": cached_at,
             "login_enabled": self.panel.login_enabled,
             "last_error": self.last_error,
             "last_error_at": self.last_error_at,
@@ -402,10 +492,15 @@ class Daemon:
             },
             "exit_ip": self._exit_ip,
             "health": self._last_health,
+            "killswitch": {
+                "enabled": bool(self.cfg["killswitch"].get("enabled")),
+                "active": self.ks.active,
+                "available": self.ks.available(),
+            },
         }
 
     def _hook_servers(self) -> dict:
-        servers, cached_at = vpngate.load_cache(self.data_dir)
+        servers = self._all_servers()
         vpn_cfg = self.cfg["vpn"]
         ordered = vpngate.sort_servers(
             servers, vpn_cfg.get("prefer_countries"), vpn_cfg.get("tcp_only"))
@@ -414,6 +509,8 @@ class Daemon:
             st = self.store.stats(s["id"])
             out.append({
                 "id": s["id"], "ip": s["ip"],
+                "custom": s.get("custom", False),
+                "custom_name": s.get("custom_name", ""),
                 "country": s["country"], "country_zh": s["country_zh"],
                 "country_short": s["country_short"],
                 "ping": s["ping"], "score": s["score"],
@@ -427,7 +524,7 @@ class Daemon:
                 "blacklisted": st["blacklisted"],
                 "blacklist_reason": st["blacklist_reason"],
             })
-        return {"ok": True, "servers": out, "cached_at": cached_at,
+        return {"ok": True, "servers": out,
                 "blocked": self.store.blocked_list()}
 
     def _hook_blacklist(self) -> dict:
@@ -499,6 +596,141 @@ class Daemon:
                     server["id"])
         return self._async_connect(server, failover=False)
 
+    # ---------- Kill-switch ----------
+
+    def _hook_killswitch(self, body: dict) -> dict:
+        """开关 kill-switch：{enabled: bool}。"""
+        enabled = bool((body or {}).get("enabled"))
+        self.cfg["killswitch"]["enabled"] = enabled
+        save_config_file(self.config_path, self.cfg)
+        if enabled:
+            if not self.ks.available():
+                return {"ok": False,
+                        "error": "本机没有 iptables，kill-switch 不可用"}
+            ok = self._ks_ensure()
+            return {"ok": ok, "enabled": ok}
+        self.ks.clear()
+        return {"ok": True, "enabled": False}
+
+    # ---------- 通知测试 ----------
+
+    def _hook_notify_test(self) -> dict:
+        return self.notifier.test()
+
+    # ---------- 自定义节点 ----------
+
+    def _custom_dir(self) -> Path:
+        d = self.data_dir / "custom"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _hook_custom_list(self) -> dict:
+        nodes = load_custom_nodes(self.data_dir)
+        cdir = self.data_dir / "custom"
+        files = {}
+        for p in cdir.glob("*.ovpn"):
+            files[p.stem] = p.name
+        return {"ok": True, "nodes": [
+            {"id": n["id"], "name": n["custom_name"], "ip": n["ip"],
+             "proto": n["proto"],
+             "file": files.get(n["custom_name"], "")} for n in nodes]}
+
+    def _hook_custom_add(self, body: dict) -> dict:
+        body = body or {}
+        name = (body.get("name") or "").strip()
+        content = (body.get("content") or "").strip()
+        if not content or "remote" not in content:
+            return {"ok": False, "error": "内容不是有效的 .ovpn 配置"}
+        safe = "".join(c for c in name
+                       if c.isalnum() or c in "-_.") or "node"
+        path = self._custom_dir() / f"{safe}.ovpn"
+        i = 1
+        while path.exists():
+            path = self._custom_dir() / f"{safe}-{i}.ovpn"
+            i += 1
+        path.write_text(content, encoding="utf-8")
+        self._event("custom", f"导入自定义节点 {path.stem}", None)
+        return {"ok": True, "file": path.name}
+
+    def _hook_custom_delete(self, body: dict) -> dict:
+        name = ((body or {}).get("file") or "").strip()
+        path = self._custom_dir() / name
+        if not name.endswith(".ovpn") or ".." in name or not path.exists():
+            return {"ok": False, "error": "文件不存在"}
+        path.unlink()
+        self._event("custom", f"删除自定义节点 {path.stem}", None)
+        return {"ok": True}
+
+    # ---------- 多出口 ----------
+
+    def _hook_exits(self) -> dict:
+        return {"ok": True, "exits": self.exit_manager.list()}
+
+    def _hook_exit_add(self, body: dict) -> dict:
+        try:
+            port = int((body or {}).get("port", 0))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "端口无效"}
+        if not 1 <= port <= 65535:
+            return {"ok": False, "error": "端口范围 1-65535"}
+        used = {self.proxy.port} | \
+            {e["proxy_port"] for e in self.exit_manager.list()}
+        if port in used:
+            return {"ok": False, "error": f"端口 {port} 已被占用"}
+        st = self.exit_manager.add(port)
+        self._event("exit", f"新增出口 {st['id']}（代理端口 {port}）",
+                    None)
+        return {"ok": True, "exit": st}
+
+    def _hook_exit_start(self, body: dict) -> dict:
+        wd = self.cfg.get("watchdog", {})
+        return self.exit_manager.start((body or {}).get("id", ""),
+                                       {"enabled": wd.get("enabled", True),
+                                        "interval": wd.get("interval", 30),
+                                        "fail_threshold": wd.get(
+                                            "fail_threshold", 3),
+                                        "max_retries": wd.get(
+                                            "max_retries", 5)})
+
+    def _hook_exit_stop(self, body: dict) -> dict:
+        return self.exit_manager.stop((body or {}).get("id", ""))
+
+    def _hook_exit_delete(self, body: dict) -> dict:
+        return self.exit_manager.delete((body or {}).get("id", ""))
+
+    # ---------- Prometheus ----------
+
+    def _hook_metrics(self) -> str:
+        """Prometheus 文本格式指标。"""
+        vpn = self.controller.status()
+        pstat = self.proxy_ctx.stats.snapshot()
+        lines = [
+            "# HELP yu_proxy_vpn_connected 1=已连接 0=未连接",
+            "# TYPE yu_proxy_vpn_connected gauge",
+            f"yu_proxy_vpn_connected "
+            f"{1 if vpn.get('connected') else 0}",
+            "# HELP yu_proxy_proxy_up_bytes 代理累计上行字节",
+            "# TYPE yu_proxy_proxy_up_bytes counter",
+            f"yu_proxy_proxy_up_bytes {pstat['tx']}",
+            "# HELP yu_proxy_proxy_down_bytes 代理累计下行字节",
+            "# TYPE yu_proxy_proxy_down_bytes counter",
+            f"yu_proxy_proxy_down_bytes {pstat['rx']}",
+            "# HELP yu_proxy_nodes_cached 节点缓存数量",
+            "# TYPE yu_proxy_nodes_cached gauge",
+            f"yu_proxy_nodes_cached {len(self._all_servers())}",
+            "# HELP yu_proxy_events_total 事件日志条数",
+            "# TYPE yu_proxy_events_total gauge",
+            f"yu_proxy_events_total {len(self._events)}",
+            "# HELP yu_proxy_killswitch_active kill-switch 是否生效",
+            "# TYPE yu_proxy_killswitch_active gauge",
+            f"yu_proxy_killswitch_active "
+            f"{1 if self.ks.active else 0}",
+            "# HELP yu_proxy_exits_total 多出口数量",
+            "# TYPE yu_proxy_exits_total gauge",
+            f"yu_proxy_exits_total {len(self.exit_manager.exits)}",
+        ]
+        return "\n".join(lines) + "\n"
+
     def _hook_refresh(self) -> dict:
         try:
             servers = vpngate.refresh(self.data_dir)
@@ -508,15 +740,19 @@ class Daemon:
             self.log(f"[api] 刷新节点失败: {e}")
             return {"ok": False, "error": str(e)}
 
-    def _find_server(self, server_id: str) -> dict | None:
+    def _all_servers(self) -> list[dict]:
+        """VPNGate 缓存节点 + 用户自定义导入节点，统一调度池。"""
         servers, _ = vpngate.load_cache(self.data_dir)
-        for s in servers:
+        return servers + load_custom_nodes(self.data_dir)
+
+    def _find_server(self, server_id: str) -> dict | None:
+        for s in self._all_servers():
             if s["id"] == server_id:
                 return s
         return None
 
     def _pick_server(self, exclude: set[str] | None = None) -> dict | None:
-        servers, _ = vpngate.load_cache(self.data_dir)
+        servers = self._all_servers()
         if not servers:
             try:
                 servers = vpngate.refresh(
@@ -566,6 +802,8 @@ class Daemon:
                         if len(queue) > 1:
                             self.log(f"[api] 尝试连接 {cand['id']} "
                                      f"({i + 1}/{len(queue)})")
+                        # kill-switch：先放行该节点 endpoint，保证能拨出去
+                        self._ks_allow(cand)
                         self.controller.start(cand)
                         self.store.record_success(cand["id"])
                         self._event("connect",
@@ -697,6 +935,16 @@ class Daemon:
                 self.watchdog.start()
             self.log("[api] 看门狗已按新配置重启")
 
+        # Kill-switch：配置变化则按新配置启用/关闭
+        if new_cfg["killswitch"] != old["killswitch"]:
+            self.notifier = Notifier(new_cfg.get("notify"), log=self.log)
+            self._ks_ensure()
+            self.log("[api] kill-switch 已按新配置更新")
+
+        # 通知配置变化：重建 Notifier
+        if new_cfg.get("notify") != old.get("notify"):
+            self.notifier = Notifier(new_cfg.get("notify"), log=self.log)
+
         # 暂停/恢复状态变化
         # （暂停状态由面板按钮控制，不存配置）
 
@@ -712,6 +960,39 @@ class Daemon:
         if self.controller.is_connected():
             return self.controller.device
         return None
+
+    # ---------- Kill-switch ----------
+
+    def _ks_extra_hosts(self) -> list[str]:
+        """kill-switch 额外放行的域名：VPNGate API + 用户自定义。"""
+        hosts: list[str] = []
+        for u in self.cfg["vpngate"].get("api_urls", []):
+            try:
+                hosts.append(urllib.parse.urlparse(u).hostname or "")
+            except Exception:
+                pass
+        hosts += self.cfg["killswitch"].get("allow_hosts", [])
+        return [h for h in hosts if h]
+
+    def _ks_ensure(self) -> bool:
+        """按配置启用/关闭 kill-switch。"""
+        want = bool(self.cfg["killswitch"].get("enabled", False))
+        if want and not self.ks.active:
+            return self.ks.ensure_base(self._ks_extra_hosts())
+        if not want and self.ks.active:
+            self.ks.clear()
+        return self.ks.active
+
+    def _ks_allow(self, server: dict) -> None:
+        """连接前放行候选节点的 endpoint。"""
+        if not self.ks.active:
+            return
+        try:
+            r = vpngate.detect_remote(server["config_b64"], server["ip"])
+            if r.get("host"):
+                self.ks.allow_endpoint(r["host"], int(r["port"]))
+        except Exception as e:
+            self.log(f"[killswitch] 解析 endpoint 失败: {e}")
 
     def _refetch_loop(self) -> None:
         """按配置间隔定时刷新节点列表。"""
@@ -763,6 +1044,9 @@ class Daemon:
         self.proxy.start()
         self.panel.start()
 
+        # Kill-switch（按配置启用）
+        self._ks_ensure()
+
         # 开机自动连接
         if self.cfg["vpn"].get("autoconnect", True):
             server = self._pick_server()
@@ -791,6 +1075,8 @@ class Daemon:
         self.log("正在停止…")
         if self.watchdog:
             self.watchdog.stop()
+        self.exit_manager.stop_all()
+        self.ks.clear()
         self.panel.stop()
         self.proxy.stop()
         self.controller.stop()

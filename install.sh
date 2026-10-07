@@ -25,13 +25,13 @@ install_deps() {
   fi
   echo "[1/5] 安装依赖…"
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq openvpn iproute2 python3
+    apt-get update -qq && apt-get install -y -qq openvpn iproute2 python3 iptables
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q openvpn iproute python3
+    yum install -y -q openvpn iproute python3 iptables
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache openvpn iproute2 python3
+    apk add --no-cache openvpn iproute2 python3 iptables
   else
-    echo "未知的包管理器，请手动安装 openvpn / iproute2 / python3 后重试"
+    echo "未知的包管理器，请手动安装 openvpn / iproute2 / python3 / iptables 后重试"
     exit 1
   fi
 }

@@ -230,7 +230,8 @@ def filter_servers(
             continue
         if cc in block_set:
             continue
-        if min_bandwidth_mbps > 0 and \
+        # 用户手动导入的节点不受带宽下限影响
+        if not s.get("custom") and min_bandwidth_mbps > 0 and \
                 s["speed_bps"] < min_bandwidth_mbps * 1_000_000:
             continue
         out.append(s)
