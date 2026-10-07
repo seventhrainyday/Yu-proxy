@@ -179,7 +179,7 @@ class VPNController:
                 "tun_ip": self._tun_ip if proc_alive else None,
                 "server_id": self._server["id"] if self._server else None,
                 "server_ip": self._server["ip"] if self._server else None,
-                "country": self._server.get("country_zh") if self._server else None,
+                "country_zh": self._server.get("country_zh") if self._server else None,
                 "proto": self._server.get("proto") if self._server else None,
                 "connected_at": self._connected_at,
                 "uptime_s": int(time.time() - self._connected_at)

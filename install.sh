@@ -49,29 +49,28 @@ mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR"
 cp "$SRC_DIR"/*.py "$INSTALL_DIR/"
 chmod 755 "$INSTALL_DIR"/*.py
 
-# 4. 写配置文件（保留已有的 token）
+# 4. 写配置文件（保留已有的账号密码，默认 admin/admin）
 echo "[3/5] 生成配置"
-TOKEN=""
-if [ -f "$CONFIG_DIR/config.json" ]; then
-  TOKEN="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json')).get('panel',{}).get('token',''))" 2>/dev/null || true)"
-fi
-if [ -z "$TOKEN" ]; then
-  TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
-fi
-python3 - "$CONFIG_DIR/config.json" "$TOKEN" <<'EOF'
+python3 - "$CONFIG_DIR/config.json" <<'PYEOF2'
 import json, sys
-path, token = sys.argv[1], sys.argv[2]
+path = sys.argv[1]
 try:
     cfg = json.load(open(path))
 except Exception:
     cfg = {}
 cfg.setdefault("data_dir", "/var/lib/Yu-proxy")
-cfg.setdefault("panel", {}).update({"bind": "0.0.0.0", "port": 52051})
-cfg["panel"]["token"] = token
+p = cfg.setdefault("panel", {})
+p.setdefault("bind", "0.0.0.0")
+p.setdefault("port", 52051)
+if not str(p.get("user", "")).strip():
+    p["user"] = "admin"
+if not str(p.get("pass", "")).strip():
+    p["pass"] = "admin"
+p.pop("token", None)  # 旧版 token 字段不再使用
 cfg.setdefault("proxy", {}).setdefault("port", 52052)
 cfg.setdefault("vpn", {}).setdefault("device", "tun0")
 json.dump(cfg, open(path, "w"), ensure_ascii=False, indent=2)
-EOF
+PYEOF2
 chmod 600 "$CONFIG_DIR/config.json"
 
 # 5. 注册系统服务（自动识别 systemd / OpenRC）
@@ -109,7 +108,8 @@ echo ""
 echo "==================================================="
 echo " 安装成功！"
 echo ""
-echo " 管理面板：http://${IP:-<服务器IP>}:${PANEL_PORT}/?token=${TOKEN}"
+echo " 管理面板：http://${IP:-<服务器IP>}:${PANEL_PORT}/"
+echo " 默认账号：admin / 默认密码：admin（首次登录后请修改）"
 echo " 代理地址：${IP:-<服务器IP>}:${PROXY_PORT}"
 echo "   （HTTP / HTTPS / SOCKS5 二合一，账号密码默认空）"
 echo ""
@@ -126,4 +126,4 @@ else
   echo "   改配置后  systemctl restart Yu-proxy"
 fi
 echo "==================================================="
-echo "面板 token 已写入 $CONFIG_DIR/config.json，请妥善保管。"
+echo "面板账号密码已写入 $CONFIG_DIR/config.json（panel.user/panel.pass）。"
