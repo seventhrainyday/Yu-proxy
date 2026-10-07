@@ -20,6 +20,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import secrets
 import signal
 import sys
@@ -55,6 +56,7 @@ def default_config() -> dict:
             "autoconnect": True,
             "prefer_countries": ["JP", "KR", "SG", "TW", "HK"],
             "tcp_only": False,
+            "connect_retries": 5,
         },
         "watchdog": {
             "enabled": True, "interval": 30,
@@ -125,9 +127,26 @@ def validate_config(cfg: dict) -> str | None:
             return "watchdog.max_retries 非法"
         if not isinstance(cfg["vpn"].get("prefer_countries"), list):
             return "prefer_countries 须为列表"
+        if int(cfg["vpn"].get("connect_retries", 5)) < 1:
+            return "vpn.connect_retries 非法"
     except (KeyError, TypeError, ValueError):
         return "配置格式错误"
     return None
+
+
+def _summarize_error(exc: Exception) -> str:
+    """把连接异常浓缩成一行面板可展示的摘要。"""
+    text = str(exc)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for line in lines:
+        if "AUTH_FAILED" in line:
+            return "节点认证失败 (AUTH_FAILED)：该节点拒绝登录，可能已失效"
+    if lines:
+        last = lines[-1]
+        last = re.sub(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2} ?",
+                      "", last)
+        return last[:300]
+    return "连接失败"
 
 
 # ---------------- 守护进程 ----------------
@@ -283,26 +302,48 @@ class Daemon:
         return vpngate.pick_best(servers, vpn_cfg.get("prefer_countries"),
                                  vpn_cfg.get("tcp_only"), exclude or set())
 
-    def _async_connect(self, server: dict) -> dict:
+    def _async_connect(self, server: dict, failover: bool = True) -> dict:
+        """异步连接。failover=True 时按排序自动顺延试多个节点，直到连上为止。"""
         if self._connecting.is_set():
             return {"ok": False, "error": "正在连接中，请稍候"}
         self._connecting.set()
 
         def _run():
             try:
-                self.controller.start(server)
-                self.last_error = None
-                self.last_error_at = None
-            except Exception as e:
-                # 只保留第一行，面板展示用
-                self.last_error = str(e).split("\n")[0][:300]
+                max_tries = int(self.cfg["vpn"].get("connect_retries", 5))
+                tried: set[str] = set()
+                queue: list[dict] = []
+                if server is not None:
+                    tried.add(server["id"])
+                    queue.append(server)
+                if failover:
+                    while len(queue) < max_tries:
+                        nxt = self._pick_server(exclude=tried)
+                        if nxt is None:
+                            break
+                        tried.add(nxt["id"])
+                        queue.append(nxt)
+                last_err = None
+                for i, cand in enumerate(queue):
+                    try:
+                        if len(queue) > 1:
+                            self.log(f"[api] 尝试连接 {cand['id']} "
+                                     f"({i + 1}/{len(queue)})")
+                        self.controller.start(cand)
+                        self.last_error = None
+                        self.last_error_at = None
+                        return
+                    except Exception as e:
+                        last_err = _summarize_error(e)
+                        self.log(f"[api] 连接 {cand['id']} 失败: {e}")
+                self.last_error = last_err or "没有可用节点"
                 self.last_error_at = time.time()
-                self.log(f"[api] 连接 {server['id']} 失败: {e}")
             finally:
                 self._connecting.clear()
 
         threading.Thread(target=_run, daemon=True).start()
-        return {"ok": True, "msg": f"正在连接 {server['id']}…"}
+        name = server["id"] if server else "最优节点"
+        return {"ok": True, "msg": f"正在连接 {name}…"}
 
     def _hook_connect(self, server_id: str | None) -> dict:
         if not server_id:
@@ -311,7 +352,7 @@ class Daemon:
         if server is None:
             return {"ok": False, "error": f"找不到节点 {server_id}"}
         self.log(f"[api] 手动连接 {server_id}")
-        return self._async_connect(server)
+        return self._async_connect(server, failover=False)
 
     def _hook_connect_best(self) -> dict:
         server = self._pick_server(

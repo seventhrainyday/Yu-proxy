@@ -159,6 +159,7 @@ const SETTING_FIELDS = [
     ['vpn.autoconnect','开机自动连接','checkbox'],
     ['vpn.prefer_countries','偏好国家（逗号分隔，如 JP,KR,SG）','text'],
     ['vpn.tcp_only','只用 TCP 节点','checkbox'],
+    ['vpn.connect_retries','一键连接最多顺延试几个节点','number'],
   ]},
   {title:'看门狗', fields:[
     ['watchdog.enabled','启用故障自动切换','checkbox'],
@@ -221,7 +222,7 @@ async function saveSettings() {
       const el = document.getElementById('cfg-'+path.split('.').join('-'));
       let v = type==='checkbox' ? el.checked : el.value.trim();
       if ((path==='proxy.port'||path==='panel.port')) v = parseInt(v,10);
-      if (['watchdog.interval','watchdog.fail_threshold','watchdog.max_retries'].includes(path)) v = parseInt(v,10);
+      if (['watchdog.interval','watchdog.fail_threshold','watchdog.max_retries','vpn.connect_retries'].includes(path)) v = parseInt(v,10);
       cfgSet(curConfig, path, v);
     }));
     const r = await api('/api/config','POST',{config:curConfig});

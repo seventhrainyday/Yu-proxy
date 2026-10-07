@@ -94,6 +94,7 @@ python3 main.py status                 # 查看状态
 | `vpn.autoconnect` | `true` | 启动时自动连接最优节点 |
 | `vpn.prefer_countries` | `["JP","KR","SG","TW","HK"]` | 国家偏好（ISO 代码），按顺序优先 |
 | `vpn.tcp_only` | `false` | `true`=只用 TCP 节点（UDP 被干扰时开） |
+| `vpn.connect_retries` | `5` | 一键连接/开机自动连接时，最多顺延试几个节点 |
 | `watchdog.enabled` | `true` | 看门狗开关 |
 | `watchdog.interval` | `30` | 探测间隔（秒） |
 | `watchdog.fail_threshold` | `3` | 连续失败几次后触发切换 |
@@ -138,6 +139,7 @@ Yu-proxy 反其道而行：
 |---|---|
 | 面板打不开 | `systemctl status Yu-proxy`；安全组放行 52051/52052 |
 | 一直连不上节点 | 看面板日志：`TLS handshake failed` 多为运营商干扰，换 TCP 节点或等看门狗自动切 |
+| 日志出现 `AUTH_FAILED` | 该免费节点拒绝登录（节点故障/被滥用封禁），一键连接会自动顺延试下几个节点 |
 | `operation not permitted` | 没给 TUN 权限（LXC / Docker 宿主机要开）或非 root 运行 |
 | 代理返回 `VPN is not connected yet.` | VPN 还没连上，等面板状态变绿；或开 `allow_direct_fallback` 临时直连 |
 | 日志 `cannot allocate tun` | `/dev/net/tun` 不存在，找商家开 TUN 支持 |
