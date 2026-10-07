@@ -31,10 +31,18 @@ OpenVPN 隧道 + HTTP/SOCKS5 二合一出口 + Web 管理面板，
 VPS 支持 TUN（`ls /dev/net/tun` 能看到设备节点）。
 
 ```bash
-# 1. 把本仓库传到 VPS 并解压
-# 2. 一键安装
+# 一键安装（在 VPS 上粘贴这一行执行，需 root）
+bash <(curl -sSL https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/install-remote.sh)
+```
+
+<details>
+<summary>手动安装（VPS 连不上 GitHub 时用）</summary>
+
+```bash
+# 把本仓库传到 VPS 并解压，然后：
 sudo bash install.sh
 ```
+</details>
 
 装完会打印：
 
@@ -98,7 +106,8 @@ proxy.py           HTTP/CONNECT + SOCKS5 转发代理（出站绑 tun）
 panel.py           Web 管理面板（单文件 http.server + 内嵌前端）
 config.json        配置示例
 Yu-proxy.service   systemd 单元
-install.sh         一键安装脚本
+install.sh         一键安装脚本（本地）
+install-remote.sh  远程一键安装：bash <(curl -sSL https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/install-remote.sh)
 ```
 
 运行时数据在 `/var/lib/Yu-proxy/`：
