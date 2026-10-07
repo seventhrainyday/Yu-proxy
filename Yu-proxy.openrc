@@ -3,7 +3,7 @@
 
 description="Yu-proxy - VPNGate proxy gateway"
 command="/usr/bin/python3"
-command_args="/opt/Yu-proxy/main.py daemon -c /etc/Yu-proxy/config.json"
+command_args="/opt/Yu-proxy/main.py -c /etc/Yu-proxy/config.json daemon"
 command_background="yes"
 pidfile="/run/yu-proxy.pid"
 output_log="/var/log/yu-proxy.log"

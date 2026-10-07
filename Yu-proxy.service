@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/Yu-proxy/main.py daemon -c /etc/Yu-proxy/config.json
+ExecStart=/usr/bin/python3 /opt/Yu-proxy/main.py -c /etc/Yu-proxy/config.json daemon
 Restart=on-failure
 RestartSec=5
 # OpenVPN 需要的权限

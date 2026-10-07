@@ -386,10 +386,35 @@ def cmd_status(cfg: dict) -> int:
     return 0
 
 
+def _extract_config_arg(argv: list[str]) -> tuple[str, list[str]]:
+    """手剥 -c/--config，允许它出现在子命令之前或之后。
+
+    argparse 的子解析器不认跟在子命令后面的全局选项，
+    所以先自己提出来，剩下的再交给 argparse。
+    """
+    config_path = DEFAULT_CONFIG_PATH
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-c", "--config") and i + 1 < len(argv):
+            config_path = argv[i + 1]
+            i += 2
+        elif a.startswith("--config="):
+            config_path = a.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(a)
+            i += 1
+    return config_path, rest
+
+
 def main() -> int:
+    config_path, argv = _extract_config_arg(sys.argv[1:])
     ap = argparse.ArgumentParser(prog="Yu-proxy",
                                  description="VPNGate 免费节点代理网关")
-    ap.add_argument("-c", "--config", default=DEFAULT_CONFIG_PATH)
+    ap.add_argument("-c", "--config", default=DEFAULT_CONFIG_PATH,
+                    help="配置文件路径（也可放在子命令后面）")
     sub = ap.add_subparsers(dest="cmd")
 
     sub.add_parser("daemon", help="前台运行守护进程（systemd 用这个）")
@@ -404,11 +429,11 @@ def main() -> int:
     sub.add_parser("status", help="查看状态")
     sub.add_parser("version", help="版本号")
 
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.cmd == "version":
         print(VERSION)
         return 0
-    cfg = load_config(args.config)
+    cfg = load_config(config_path)
 
     if args.cmd == "daemon" or args.cmd is None:
         Daemon(cfg).run()
