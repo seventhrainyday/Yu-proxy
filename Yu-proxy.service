@@ -1,0 +1,16 @@
+[Unit]
+Description=Yu-proxy - 免费 VPNGate 节点代理网关
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/Yu-proxy/main.py daemon -c /etc/Yu-proxy/config.json
+Restart=on-failure
+RestartSec=5
+# OpenVPN 需要的权限
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

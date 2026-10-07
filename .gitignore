@@ -1,4 +1,5 @@
 __pycache__/
-*.pyc
-build/
-dist/
+*.py[cod]
+.DS_Store
+.vscode/
+*.log
