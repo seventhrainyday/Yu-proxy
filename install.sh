@@ -43,11 +43,10 @@ if [ ! -e /dev/net/tun ]; then
   echo "       LXC/容器类 VPS 需找商家开启 TUN 支持后再继续。"
 fi
 
-# 3. 复制程序文件
+# 3. 复制程序文件（用通配符，避免新增 py 文件时漏复制）
 echo "[2/5] 复制文件到 $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR"
-cp "$SRC_DIR/main.py" "$SRC_DIR/vpngate.py" "$SRC_DIR/vpnctl.py" \
-   "$SRC_DIR/proxy.py" "$SRC_DIR/panel.py" "$INSTALL_DIR/"
+cp "$SRC_DIR"/*.py "$INSTALL_DIR/"
 chmod 755 "$INSTALL_DIR"/*.py
 
 # 4. 写配置文件（保留已有的 token）
