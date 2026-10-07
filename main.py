@@ -44,7 +44,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -114,6 +114,14 @@ def load_config(path: str) -> dict:
             print(f"[warn] 配置文件解析失败，使用默认配置: {e}")
     else:
         p.parent.mkdir(parents=True, exist_ok=True)
+    # 兼容 token 时代的老配置：user/pass 为空则填默认 admin/admin
+    if not str(cfg["panel"].get("user", "")).strip():
+        cfg["panel"]["user"] = "admin"
+        print("[init] 面板账号为空，已重置为默认 admin")
+    if not str(cfg["panel"].get("pass", "")).strip():
+        cfg["panel"]["pass"] = "admin"
+        print("[init] 面板密码为空，已重置为默认 admin")
+    cfg["panel"].pop("token", None)  # 旧版 token 字段不再使用
     # 回写（补全缺省项）
     try:
         p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
