@@ -15,7 +15,7 @@ import re
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 API_URL = "http://www.vpngate.net/api/iphone/"
 CACHE_FILENAME = "servers.json"
@@ -199,11 +199,42 @@ def load_cache(data_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
         return [], 0
 
 
-def refresh(data_dir: str | Path, url: str = API_URL) -> list[dict[str, Any]]:
-    """拉取最新列表并写入缓存，返回节点列表。"""
-    servers = parse_servers(fetch_csv(url))
-    save_cache(servers, data_dir)
-    return servers
+def refresh(data_dir: str | Path,
+            urls: list[str] | None = None) -> list[dict[str, Any]]:
+    """按顺序尝试多个源（官网→镜像），拉取最新列表并写入缓存。"""
+    urls = urls or [API_URL]
+    last_err: Exception | None = None
+    for url in urls:
+        try:
+            servers = parse_servers(fetch_csv(url))
+            save_cache(servers, data_dir)
+            return servers
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"所有节点源都拉取失败: {last_err}")
+
+
+def filter_servers(
+    servers: list[dict[str, Any]],
+    allow: list[str] | None = None,
+    block: list[str] | None = None,
+    min_bandwidth_mbps: float = 0,
+) -> list[dict[str, Any]]:
+    """国家白名单/黑名单 + 最低带宽过滤。"""
+    allow_set = {c.upper() for c in (allow or [])}
+    block_set = {c.upper() for c in (block or [])}
+    out = []
+    for s in servers:
+        cc = s["country_short"].upper()
+        if allow_set and cc not in allow_set:
+            continue
+        if cc in block_set:
+            continue
+        if min_bandwidth_mbps > 0 and \
+                s["speed_bps"] < min_bandwidth_mbps * 1_000_000:
+            continue
+        out.append(s)
+    return out
 
 
 def pick_best(
@@ -211,12 +242,49 @@ def pick_best(
     prefer_countries: list[str] | None = None,
     tcp_only: bool = False,
     exclude_ids: set[str] | None = None,
+    allow: list[str] | None = None,
+    block: list[str] | None = None,
+    min_bandwidth_mbps: float = 0,
+    is_blacklisted: Callable[[str], bool] | None = None,
 ) -> dict[str, Any] | None:
-    """按排序策略挑一个最优节点，可排除若干 id（用于故障转移）。"""
+    """按排序策略挑一个最优节点。
+
+    exclude_ids: 故障转移时排除；allow/block/min_bandwidth: 过滤；
+    is_blacklisted: 黑名单回调，被拉黑的节点跳过。
+    """
     exclude = exclude_ids or set()
-    candidates = [s for s in sort_servers(servers, prefer_countries, tcp_only)
-                  if s["id"] not in exclude]
+    pool = filter_servers(servers, allow, block, min_bandwidth_mbps)
+    candidates = [
+        s for s in sort_servers(pool, prefer_countries, tcp_only)
+        if s["id"] not in exclude
+        and not (is_blacklisted and is_blacklisted(s["id"]))
+    ]
     return candidates[0] if candidates else None
+
+
+def pick_weighted(
+    servers: list[dict[str, Any]],
+    prefer_countries: list[str] | None = None,
+    tcp_only: bool = False,
+    exclude_ids: set[str] | None = None,
+    allow: list[str] | None = None,
+    block: list[str] | None = None,
+    min_bandwidth_mbps: float = 0,
+    is_blacklisted: Callable[[str], bool] | None = None,
+) -> dict[str, Any] | None:
+    """权重随机：分数越高被选中的概率越大（调度策略用）。"""
+    exclude = exclude_ids or set()
+    pool = filter_servers(servers, allow, block, min_bandwidth_mbps)
+    candidates = [
+        s for s in sort_servers(pool, prefer_countries, tcp_only)
+        if s["id"] not in exclude
+        and not (is_blacklisted and is_blacklisted(s["id"]))
+    ]
+    if not candidates:
+        return None
+    import random
+    weights = [max(1, s["score"]) for s in candidates]
+    return random.choices(candidates, weights=weights, k=1)[0]
 
 
 def format_speed(bps: int) -> str:

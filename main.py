@@ -32,9 +32,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
+from health import HealthChecker, tcp_ping
+from nodestore import NodeStore
 from vpnctl import VPNController, Watchdog
 from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
+from collections import deque
 
 VERSION = "1.0.0"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
@@ -50,6 +53,7 @@ def default_config() -> dict:
             "user": "", "pass": "",
             "dns_server": "8.8.8.8",
             "allow_direct_fallback": False,
+            "allow_ips": [],
         },
         "vpn": {
             "device": "tun0",
@@ -61,6 +65,21 @@ def default_config() -> dict:
         "watchdog": {
             "enabled": True, "interval": 30,
             "fail_threshold": 3, "max_retries": 5,
+            "health_check": True, "health_interval": 60,
+        },
+        "vpngate": {
+            "api_urls": ["https://www.vpngate.net/api/iphone/"],
+            "refresh_interval_h": 6,
+        },
+        "filter": {
+            "countries_allow": [],
+            "countries_block": [],
+            "min_bandwidth_mbps": 0,
+        },
+        "scheduler": {
+            "mode": "failover",
+            "rotate_interval_min": 30,
+            "force_rotation_h": 0,
         },
     }
 
@@ -125,10 +144,31 @@ def validate_config(cfg: dict) -> str | None:
             return "watchdog.fail_threshold 非法"
         if int(wd.get("max_retries", 5)) < 1:
             return "watchdog.max_retries 非法"
+        if int(wd.get("health_interval", 60)) < 10:
+            return "watchdog.health_interval 不能小于 10 秒"
         if not isinstance(cfg["vpn"].get("prefer_countries"), list):
             return "prefer_countries 须为列表"
         if int(cfg["vpn"].get("connect_retries", 5)) < 1:
             return "vpn.connect_retries 非法"
+        if cfg["scheduler"]["mode"] not in ("failover", "rotate", "random"):
+            return "scheduler.mode 非法"
+        if int(cfg["scheduler"].get("rotate_interval_min", 30)) < 1:
+            return "scheduler.rotate_interval_min 非法"
+        if float(cfg["scheduler"].get("force_rotation_h", 0)) < 0:
+            return "scheduler.force_rotation_h 非法"
+        if not isinstance(cfg["filter"].get("countries_allow"), list):
+            return "countries_allow 须为列表"
+        if not isinstance(cfg["filter"].get("countries_block"), list):
+            return "countries_block 须为列表"
+        if float(cfg["filter"].get("min_bandwidth_mbps", 0)) < 0:
+            return "min_bandwidth_mbps 非法"
+        if not isinstance(cfg["proxy"].get("allow_ips"), list):
+            return "proxy.allow_ips 须为列表"
+        if not isinstance(cfg["vpngate"].get("api_urls"), list) or \
+                not cfg["vpngate"]["api_urls"]:
+            return "vpngate.api_urls 不能为空"
+        if float(cfg["vpngate"].get("refresh_interval_h", 6)) < 1:
+            return "vpngate.refresh_interval_h 不能小于 1 小时"
     except (KeyError, TypeError, ValueError):
         return "配置格式错误"
     return None
@@ -172,6 +212,7 @@ class Daemon:
             panel_user=panel_cfg.get("user", ""),
             panel_pass=panel_cfg.get("pass", ""))
 
+        self._paused = False
         self.watchdog: Watchdog | None = None
         self._build_watchdog()
 
@@ -180,17 +221,34 @@ class Daemon:
         self.last_error: str | None = None
         self.last_error_at: float | None = None
 
+        # 节点统计与黑名单
+        self.store = NodeStore(self.data_dir / "nodes.json")
+        # 事件日志（连接/切换/故障），内存 + 落盘
+        self._events: deque = deque(maxlen=200)
+        self._load_events()
+        # 网速采样：(t, up_bps, down_bps)，每 2 秒一个点
+        self._throughput: deque = deque(maxlen=180)
+        self._tp_last: tuple[float, int, int] | None = None
+        # 调度状态
+        self._exit_ip = ""
+        self._last_health: dict | None = None
+
     def _build_proxy(self) -> None:
         proxy_cfg = self.cfg["proxy"]
         auth = None
         if proxy_cfg.get("user"):
             auth = (proxy_cfg["user"], proxy_cfg.get("pass", ""))
+        allow_ips = proxy_cfg.get("allow_ips") or []
+        if isinstance(allow_ips, str):
+            allow_ips = [ip.strip() for ip in allow_ips.split(",")
+                         if ip.strip()]
         self.proxy_ctx = ProxyContext(
             get_device=self._current_device,
             auth=auth,
             dns_server=proxy_cfg.get("dns_server", "8.8.8.8"),
             allow_direct_fallback=proxy_cfg.get("allow_direct_fallback",
                                                 False),
+            allow_ips=allow_ips,
             log=self.log,
         )
         self.proxy = ProxyServer(proxy_cfg["bind"], proxy_cfg["port"],
@@ -198,6 +256,7 @@ class Daemon:
 
     def _build_watchdog(self) -> None:
         wd_cfg = self.cfg["watchdog"]
+        sch_cfg = self.cfg["scheduler"]
         if self.watchdog is not None:
             self.watchdog.stop()
             self.watchdog = None
@@ -208,8 +267,74 @@ class Daemon:
                 interval=wd_cfg.get("interval", 30),
                 fail_threshold=wd_cfg.get("fail_threshold", 3),
                 max_retries=wd_cfg.get("max_retries", 5),
+                mode=sch_cfg.get("mode", "failover"),
+                rotate_interval=sch_cfg.get("rotate_interval_min", 30)
+                * 60,
+                force_rotation_h=sch_cfg.get("force_rotation_h", 0),
+                health_check=self._health_check
+                if wd_cfg.get("health_check", True) else None,
+                event_fn=self._watchdog_event,
                 log=self.log,
             )
+            self.watchdog.paused = self._paused
+
+    # ---------- 事件日志 ----------
+
+    def _events_path(self) -> Path:
+        return self.data_dir / "events.json"
+
+    def _load_events(self) -> None:
+        try:
+            data = json.loads(
+                self._events_path().read_text(encoding="utf-8"))
+            for e in data[-200:]:
+                self._events.append(e)
+        except Exception:
+            pass
+
+    def _save_events(self) -> None:
+        try:
+            self._events_path().write_text(
+                json.dumps(list(self._events), ensure_ascii=False),
+                encoding="utf-8")
+        except Exception:
+            pass
+
+    def _event(self, etype: str, msg: str,
+               server_id: str | None = None) -> None:
+        self._events.append({
+            "t": time.time(), "type": etype, "msg": msg,
+            "server": server_id,
+        })
+        self._save_events()
+        self.log(f"[event] {msg}")
+
+    def _watchdog_event(self, etype: str, msg: str,
+                        server_id: str | None = None) -> None:
+        # 看门狗触发的切换：更新节点统计
+        if etype == "connect" and server_id:
+            self.store.record_success(server_id)
+        elif etype == "fail" and server_id:
+            self.store.record_fail(server_id)
+        self._event(etype, msg, server_id)
+
+    # ---------- 健康检查 ----------
+
+    def _proxy_addr(self) -> tuple[str, tuple[str, str] | None]:
+        pc = self.cfg["proxy"]
+        bind = pc.get("bind", "0.0.0.0")
+        host = "127.0.0.1" if bind == "0.0.0.0" else bind
+        auth = (pc["user"], pc.get("pass", "")) if pc.get("user") else None
+        return f"http://{host}:{self.proxy.port}", auth
+
+    def _health_check(self) -> dict:
+        hc = HealthChecker(self._current_device, self._proxy_addr,
+                           log=self.log)
+        r = hc.check()
+        self._last_health = r
+        if r.get("exit_ip"):
+            self._exit_ip = r["exit_ip"]
+        return r
 
     # ----- 日志 -----
     def _setup_logging(self) -> None:
@@ -237,14 +362,27 @@ class Daemon:
             "log": self._hook_log,
             "get_config": self._hook_get_config,
             "save_config": self._hook_save_config,
+            "blacklist": self._hook_blacklist,
+            "blacklist_add": self._hook_blacklist_add,
+            "blacklist_remove": self._hook_blacklist_remove,
+            "events": self._hook_events,
+            "throughput": self._hook_throughput,
+            "pause": self._hook_pause,
+            "resume": self._hook_resume,
+            "probe": self._hook_probe,
+            "rotate_now": self._hook_rotate_now,
         }
 
     def _hook_status(self) -> dict:
         servers, cached_at = vpngate.load_cache(self.data_dir)
+        vpn_status = self.controller.status()
+        if vpn_status.get("connected_at"):
+            vpn_status["uptime_s"] = \
+                int(time.time() - vpn_status["connected_at"])
         return {
             "ok": True,
             "version": VERSION,
-            "vpn": self.controller.status(),
+            "vpn": vpn_status,
             "proxy": {
                 "listen": f"{self.proxy.bind}:{self.proxy.port}",
                 "auth": self.proxy_ctx.auth is not None,
@@ -255,6 +393,12 @@ class Daemon:
             "login_enabled": self.panel.login_enabled,
             "last_error": self.last_error,
             "last_error_at": self.last_error_at,
+            "scheduler": {
+                "mode": self.cfg["scheduler"].get("mode", "failover"),
+                "paused": self._paused,
+            },
+            "exit_ip": self._exit_ip,
+            "health": self._last_health,
         }
 
     def _hook_servers(self) -> dict:
@@ -264,16 +408,93 @@ class Daemon:
             servers, vpn_cfg.get("prefer_countries"), vpn_cfg.get("tcp_only"))
         out = []
         for s in ordered:
+            st = self.store.stats(s["id"])
             out.append({
                 "id": s["id"], "ip": s["ip"],
                 "country": s["country"], "country_zh": s["country_zh"],
                 "country_short": s["country_short"],
                 "ping": s["ping"], "score": s["score"],
                 "speed_h": vpngate.format_speed(s["speed_bps"]),
+                "speed_mbps": round(s["speed_bps"] / 1_000_000, 1),
                 "sessions": s["sessions"], "proto": s["proto"],
                 "uptime_h": vpngate.format_uptime(s["uptime_s"]),
+                "uptime_s": s["uptime_s"],
+                "node_ok": st["ok"], "node_fail": st["fail"],
+                "success_rate": st["success_rate"],
+                "blacklisted": st["blacklisted"],
+                "blacklist_reason": st["blacklist_reason"],
             })
-        return {"ok": True, "servers": out, "cached_at": cached_at}
+        return {"ok": True, "servers": out, "cached_at": cached_at,
+                "blocked": self.store.blocked_list()}
+
+    def _hook_blacklist(self) -> dict:
+        return {"ok": True, "blocked": self.store.blocked_list()}
+
+    def _hook_blacklist_add(self, server_id: str | None) -> dict:
+        if not server_id:
+            return {"ok": False, "error": "缺少节点 id"}
+        self.store.manual_block(server_id)
+        self._event("block", f"手动拉黑 {server_id}", server_id)
+        return {"ok": True}
+
+    def _hook_blacklist_remove(self, server_id: str | None) -> dict:
+        if not server_id:
+            return {"ok": False, "error": "缺少节点 id"}
+        self.store.manual_unblock(server_id)
+        self._event("unblock", f"解除拉黑 {server_id}", server_id)
+        return {"ok": True}
+
+    def _hook_events(self) -> dict:
+        return {"ok": True, "events": list(self._events)[-100:]}
+
+    def _hook_throughput(self) -> dict:
+        return {"ok": True,
+                "samples": [list(s) for s in self._throughput]}
+
+    def _hook_pause(self) -> dict:
+        self._paused = True
+        if self.watchdog:
+            self.watchdog.paused = True
+        self._event("pause", "已暂停自动切换")
+        return {"ok": True}
+
+    def _hook_resume(self) -> dict:
+        self._paused = False
+        if self.watchdog:
+            self.watchdog.paused = False
+        self._event("resume", "已恢复自动切换")
+        return {"ok": True}
+
+    def _hook_probe(self, server_id: str | None) -> dict:
+        """对单个节点做 TCP 握手探测（节点卡片上的测速按钮）。"""
+        server = self._find_server(server_id) if server_id else None
+        if server is None:
+            return {"ok": False, "error": "找不到节点"}
+        ms = tcp_ping(server["ip"], 443, timeout=5)
+        if ms is None:
+            # 有些节点只开 UDP/其他端口，再试配置里解析出的端口
+            try:
+                r = vpngate.detect_remote(server["config_b64"],
+                                          server["ip"])
+                if r["port"] != 443:
+                    ms = tcp_ping(r["host"] or server["ip"],
+                                  r["port"], timeout=5)
+            except Exception as e:
+                self.log(f"[probe] 解析节点端口失败: {e}")
+        if ms is None:
+            return {"ok": False, "error": "TCP 探测超时"}
+        return {"ok": True, "ms": round(ms * 1000, 1)}
+
+    def _hook_rotate_now(self) -> dict:
+        """手动立即切换节点（仪表盘快捷按钮）。"""
+        server = self._pick_server(
+            exclude={self.controller.current_server_id()}
+            if self.controller.current_server_id() else set())
+        if server is None:
+            return {"ok": False, "error": "没有可用节点"}
+        self._event("switch", f"手动切换到 {server['id']}",
+                    server["id"])
+        return self._async_connect(server, failover=False)
 
     def _hook_refresh(self) -> dict:
         try:
@@ -295,12 +516,25 @@ class Daemon:
         servers, _ = vpngate.load_cache(self.data_dir)
         if not servers:
             try:
-                servers = vpngate.refresh(self.data_dir)
+                servers = vpngate.refresh(
+                    self.data_dir, self.cfg["vpngate"]["api_urls"])
             except Exception:
                 return None
         vpn_cfg = self.cfg["vpn"]
-        return vpngate.pick_best(servers, vpn_cfg.get("prefer_countries"),
-                                 vpn_cfg.get("tcp_only"), exclude or set())
+        fcfg = self.cfg["filter"]
+        kw = dict(
+            allow=fcfg.get("countries_allow"),
+            block=fcfg.get("countries_block"),
+            min_bandwidth_mbps=fcfg.get("min_bandwidth_mbps", 0),
+            is_blacklisted=lambda sid: self.store.is_blacklisted(sid)[0],
+        )
+        if self.cfg["scheduler"].get("mode") == "random":
+            return vpngate.pick_weighted(
+                servers, vpn_cfg.get("prefer_countries"),
+                vpn_cfg.get("tcp_only"), exclude or set(), **kw)
+        return vpngate.pick_best(
+            servers, vpn_cfg.get("prefer_countries"),
+            vpn_cfg.get("tcp_only"), exclude or set(), **kw)
 
     def _async_connect(self, server: dict, failover: bool = True) -> dict:
         """异步连接。failover=True 时按排序自动顺延试多个节点，直到连上为止。"""
@@ -330,11 +564,22 @@ class Daemon:
                             self.log(f"[api] 尝试连接 {cand['id']} "
                                      f"({i + 1}/{len(queue)})")
                         self.controller.start(cand)
+                        self.store.record_success(cand["id"])
+                        self._event("connect",
+                                    f"已连接 {cand['id']} "
+                                    f"({cand['country_zh']} {cand['ip']})",
+                                    cand["id"])
                         self.last_error = None
                         self.last_error_at = None
                         return
                     except Exception as e:
                         last_err = _summarize_error(e)
+                        self.store.record_fail(cand["id"])
+                        # 连接失败的节点临时拉黑 30 分钟，别马上又选回来
+                        self.store.temp_blacklist(cand["id"], 1800)
+                        self._event("fail",
+                                    f"{cand['id']} 连接失败: {last_err}",
+                                    cand["id"])
                         self.log(f"[api] 连接 {cand['id']} 失败: {e}")
                 self.last_error = last_err or "没有可用节点"
                 self.last_error_at = time.time()
@@ -364,7 +609,9 @@ class Daemon:
         return self._async_connect(server)
 
     def _hook_disconnect(self) -> dict:
+        sid = self.controller.current_server_id()
         self.controller.stop()
+        self._event("disconnect", f"手动断开 {sid or ''}", sid)
         return {"ok": True}
 
     def _hook_log(self, n: int) -> list[str]:
@@ -439,12 +686,16 @@ class Daemon:
         # VPN：网卡名下次连接生效
         self.controller.device = new_cfg["vpn"]["device"]
 
-        # 看门狗：配置变化则重建
-        if new_cfg["watchdog"] != old["watchdog"]:
+        # 看门狗/调度策略：配置变化则重建
+        if new_cfg["watchdog"] != old["watchdog"] or \
+                new_cfg["scheduler"] != old["scheduler"]:
             self._build_watchdog()
             if self.watchdog is not None:
                 self.watchdog.start()
             self.log("[api] 看门狗已按新配置重启")
+
+        # 暂停/恢复状态变化
+        # （暂停状态由面板按钮控制，不存配置）
 
         return {
             "ok": True,
@@ -458,6 +709,43 @@ class Daemon:
         if self.controller.is_connected():
             return self.controller.device
         return None
+
+    def _refetch_loop(self) -> None:
+        """按配置间隔定时刷新节点列表。"""
+        while not self._stop_event.wait(3600):
+            try:
+                hours = float(
+                    self.cfg["vpngate"].get("refresh_interval_h", 6))
+            except (TypeError, ValueError):
+                hours = 6
+            # 每小时醒一次，用累计器实现可变间隔
+            self._refetch_acc = getattr(self, "_refetch_acc", 0) + 1
+            if self._refetch_acc >= hours:
+                self._refetch_acc = 0
+                try:
+                    servers = vpngate.refresh(
+                        self.data_dir, self.cfg["vpngate"]["api_urls"])
+                    self.log(f"[refetch] 节点列表已更新，共 {len(servers)} 个")
+                    self._event("refresh",
+                                f"节点列表已更新，共 {len(servers)} 个")
+                except Exception as e:
+                    self.log(f"[refetch] 刷新失败: {e}")
+
+    def _throughput_loop(self) -> None:
+        """每 2 秒采样代理吞吐，算出上下行 bps。"""
+        while not self._stop_event.wait(2):
+            try:
+                snap = self.proxy_ctx.stats.snapshot()
+                now = time.time()
+                up, down = snap["up_bytes"], snap["down_bytes"]
+                if self._tp_last is not None:
+                    t0, up0, down0 = self._tp_last
+                    dt = max(0.1, now - t0)
+                    self._throughput.append(
+                        (now, (up - up0) * 8 / dt, (down - down0) * 8 / dt))
+                self._tp_last = (now, up, down)
+            except Exception:
+                pass
 
     def run(self) -> None:
         if os.geteuid() != 0:
@@ -480,6 +768,13 @@ class Daemon:
 
         if self.watchdog:
             self.watchdog.start()
+
+        # 定时刷新节点列表
+        threading.Thread(target=self._refetch_loop, daemon=True,
+                         name="refetch").start()
+        # 网速采样
+        threading.Thread(target=self._throughput_loop, daemon=True,
+                         name="throughput").start()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: self._stop_event.set())

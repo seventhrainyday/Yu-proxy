@@ -425,18 +425,29 @@ class ProxyContext:
                  auth: tuple[str, str] | None = None,
                  dns_server: str = "8.8.8.8",
                  allow_direct_fallback: bool = False,
+                 allow_ips: list[str] | None = None,
                  log=print):
         self.get_device = get_device
         self.auth = auth
         self.dns_server = dns_server
         self.allow_direct_fallback = allow_direct_fallback
+        self.allow_ips = allow_ips or []
         self.log = log
         self.stats = TrafficStats()
+
+    def ip_allowed(self, ip: str) -> bool:
+        if not self.allow_ips:
+            return True
+        return ip in self.allow_ips
 
 
 def _serve_one(client: socket.socket, addr, ctx: ProxyContext,
                sem: threading.BoundedSemaphore) -> None:
     try:
+        client_ip = addr[0] if isinstance(addr, tuple) else str(addr)
+        if not ctx.ip_allowed(client_ip):
+            client.close()
+            return
         client.settimeout(30)
         first = _recv_exact(client, 1)
         if first == b"\x05":
@@ -487,11 +498,21 @@ class ProxyServer:
     def stop(self) -> None:
         self._running = False
         if self._sock is not None:
+            # 必须先 shutdown 才能唤醒阻塞在 accept() 里的线程，
+            # 光 close() 唤不醒它，旧 socket 会继续占着端口导致重 bind 失败
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 self._sock.close()
             except OSError:
                 pass
             self._sock = None
+        # 等旧 accept 线程真正退出再返回，否则立刻重 bind 会 EADDRINUSE
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
 
     def _accept_loop(self) -> None:
         assert self._sock is not None

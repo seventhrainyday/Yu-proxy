@@ -266,13 +266,25 @@ class VPNController:
 
 
 class Watchdog(threading.Thread):
-    """看门狗：定期经 tun 探测外网，连续失败则自动换节点重连。"""
+    """看门狗：健康检查 + 调度策略执行。
+
+    调度模式 mode:
+      failover - 主备：只管故障转移
+      rotate   - 轮询：每 rotate_interval 秒换一个节点
+      random   - 权重随机由 pick_server 回调实现
+    force_rotation_h > 0 时，不管节点好坏，每 X 小时强制换出口 IP。
+    """
 
     def __init__(self, controller: VPNController,
-                 pick_server,  # () -> dict | None，故障转移时挑下一个
+                 pick_server,  # (exclude:set) -> dict | None
                  interval: float = 30.0,
                  fail_threshold: int = 3,
                  max_retries: int = 5,
+                 mode: str = "failover",
+                 rotate_interval: float = 1800.0,
+                 force_rotation_h: float = 0,
+                 health_check: Callable[[], dict] | None = None,
+                 event_fn: Callable[..., None] | None = None,
                  log: LogFn | None = None):
         super().__init__(daemon=True, name="vpn-watchdog")
         self.controller = controller
@@ -280,9 +292,15 @@ class Watchdog(threading.Thread):
         self.interval = interval
         self.fail_threshold = fail_threshold
         self.max_retries = max_retries
+        self.mode = mode
+        self.rotate_interval = rotate_interval
+        self.force_rotation_h = force_rotation_h
+        self.health_check = health_check
+        self.event_fn = event_fn
         self.log: LogFn = log or _default_log
         self._stop_event = threading.Event()
         self._fails = 0
+        self.paused = False
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -295,39 +313,90 @@ class Watchdog(threading.Thread):
             except Exception as e:
                 self.log(f"[watchdog] 异常: {e}")
 
+    def _emit(self, etype: str, msg: str,
+              server_id: str | None = None) -> None:
+        if self.event_fn:
+            try:
+                self.event_fn(etype, msg, server_id)
+            except Exception:
+                pass
+
     def _tick(self) -> None:
+        if self.paused:
+            return
         if not self.controller.is_connected():
             self._fails = 0
             return
-        ok = tcp_via_device("8.8.8.8", 53, self.controller.device,
-                            timeout=5.0)
+
+        # 定时轮换 / 强制换 IP（不看健康，直接换）
+        reason = self._rotation_due()
+        if reason:
+            self._switch(reason)
+            return
+
+        # 健康检查
+        ok, detail = self._health_ok()
         if ok:
             if self._fails:
                 self.log("[watchdog] 隧道恢复")
             self._fails = 0
             return
         self._fails += 1
-        self.log(f"[watchdog] 隧道探测失败 ({self._fails}/"
-                 f"{self.fail_threshold})")
+        self.log(f"[watchdog] 隧道不健康 ({self._fails}/"
+                 f"{self.fail_threshold}): {detail}")
         if self._fails < self.fail_threshold:
             return
         self._fails = 0
-        self._failover()
+        self._switch(f"健康检查失败: {detail}")
 
-    def _failover(self) -> None:
+    def _rotation_due(self) -> str | None:
+        st = self.controller.status()
+        connected_at = st.get("connected_at")
+        if not connected_at:
+            return None
+        elapsed = time.time() - connected_at
+        if self.force_rotation_h > 0 and \
+                elapsed >= self.force_rotation_h * 3600:
+            return f"强制换出口 IP（已连接 {elapsed / 3600:.1f} 小时）"
+        if self.mode == "rotate" and elapsed >= self.rotate_interval:
+            return "定时轮换节点"
+        return None
+
+    def _health_ok(self) -> tuple[bool, str]:
+        if self.health_check is not None:
+            try:
+                r = self.health_check()
+                return bool(r.get("ok")), r.get("reason", "")
+            except Exception as e:
+                return False, f"健康检查异常: {e}"
+        ok = tcp_via_device("8.8.8.8", 53, self.controller.device,
+                            timeout=5.0)
+        return ok, "" if ok else "隧道 TCP 不通"
+
+    def _switch(self, reason: str) -> None:
         cur = self.controller.current_server_id()
+        self.log(f"[watchdog] {reason}，切换节点…")
+        self._emit("switch", reason, cur)
         tried = {cur} if cur else set()
-        for attempt in range(self.max_retries):
+        for _ in range(self.max_retries):
             nxt = self.pick_server(exclude=tried)
             if nxt is None:
                 break
             tried.add(nxt["id"])
-            self.log(f"[watchdog] 故障转移 -> {nxt['id']} "
+            self.log(f"[watchdog] 切换 -> {nxt['id']} "
                      f"({nxt['country_zh']} {nxt['ip']})")
             try:
                 self.controller.start(nxt)
-                self.log("[watchdog] 故障转移成功")
+                self.log("[watchdog] 切换成功")
+                self._emit("connect", f"已切换到 {nxt['id']}",
+                           nxt["id"])
                 return
             except Exception as e:
                 self.log(f"[watchdog] 切换到 {nxt['id']} 失败: {e}")
+                self._emit("fail", f"{nxt['id']}: {e}", nxt["id"])
         self.log("[watchdog] 多次重连失败，等待下一轮")
+        self._emit("fail", "多次重连失败", cur)
+
+    # 兼容旧名
+    def _failover(self) -> None:
+        self._switch("健康检查失败")

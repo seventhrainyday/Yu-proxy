@@ -18,230 +18,258 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 PAGE_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yu-proxy · 管理面板</title>
+<title>Yu-proxy</title>
 <style>
-:root { --bg:#0f141b; --card:#18202b; --line:#243044; --txt:#e8eef6;
-        --dim:#8b98ab; --green:#3ddc84; --red:#ff5d5d; --blue:#4da3ff;
-        --yellow:#ffcf5c; }
-* { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--txt);
-       font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
-.wrap { max-width:1080px; margin:0 auto; padding:20px 16px 60px; }
-h1 { font-size:20px; margin:0 0 4px; }
-.sub { color:var(--dim); font-size:13px; margin-bottom:18px; }
-.card { background:var(--card); border:1px solid var(--line);
-        border-radius:12px; padding:16px; margin-bottom:16px; }
-.card h2 { font-size:15px; margin:0 0 12px; color:var(--dim);
-           font-weight:600; }
-.status-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-               gap:10px; margin-bottom:14px; }
-.stat { background:#101722; border:1px solid var(--line); border-radius:8px;
-        padding:10px 12px; }
-.stat .k { font-size:12px; color:var(--dim); margin-bottom:4px; }
-.stat .v { font-size:16px; font-weight:600; }
-.dot { display:inline-block; width:10px; height:10px; border-radius:50%;
-       margin-right:6px; vertical-align:1px; }
-.dot.on { background:var(--green); box-shadow:0 0 8px var(--green); }
-.dot.off { background:var(--red); box-shadow:0 0 8px var(--red); }
-.btnrow { display:flex; flex-wrap:wrap; gap:10px; }
-button { background:#1f2c40; color:var(--txt); border:1px solid var(--line);
-         border-radius:8px; padding:9px 16px; font-size:14px; cursor:pointer; }
-button:hover { background:#27374f; }
-button.primary { background:#1c5fb8; border-color:#1c5fb8; }
-button.primary:hover { background:#2470d0; }
-button.danger { background:#5c2222; border-color:#7a2d2d; }
-button:disabled { opacity:.45; cursor:wait; }
-table { width:100%; border-collapse:collapse; font-size:13px; }
-th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line);
-         white-space:nowrap; }
-th { color:var(--dim); font-weight:600; font-size:12px; }
-tr:hover td { background:#141c28; }
-.toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px;
-           flex-wrap:wrap; }
-.toolbar .spacer { flex:1; }
-.meta { color:var(--dim); font-size:12px; }
-#log { background:#0a0e13; border:1px solid var(--line); border-radius:8px;
-       padding:10px 12px; height:260px; overflow-y:auto; font-family:monospace;
-       font-size:12px; line-height:1.6; white-space:pre-wrap;
-       word-break:break-all; }
-.pill { display:inline-block; padding:2px 8px; border-radius:20px;
-        font-size:12px; background:#1f2c40; }
-.pill.tcp { background:#173a24; color:var(--green); }
-.note { font-size:12px; color:var(--dim); margin-top:8px; }
+:root{
+  --bg:#e3e8f0; --card:#e3e8f0; --txt:#2c3546; --dim:#7c8598;
+  --sd:#b9bfcb; --sl:#ffffff;
+  --in-d:#c6ccd8; --in-l:#f2f5fa;
+  --primary:#2563eb; --primary-soft:rgba(37,99,235,.12);
+  --green:#2f9e5f; --orange:#d97706; --red:#dc4446;
+  --radius:18px; --radius-s:10px;
+}
+[data-theme="dark"]{
+  --bg:#191c24; --card:#191c24; --txt:#e2e7f1; --dim:#8b93a7;
+  --sd:#0f1117; --sl:#262c3b;
+  --in-d:#11131a; --in-l:#222839;
+  --primary:#4a8bff; --primary-soft:rgba(74,139,255,.16);
+  --green:#4ade80; --orange:#fbbf24; --red:#f87171;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:Inter,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  line-height:1.65;min-height:100vh;transition:background .3s}
+.topbar{display:flex;align-items:center;justify-content:space-between;
+  padding:14px 20px;position:sticky;top:0;z-index:20;
+  background:color-mix(in srgb,var(--bg) 82%,transparent);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.logo{font-size:19px;font-weight:700}
+.top-actions{display:flex;gap:10px}
+.icon-btn{width:42px;height:42px;border:none;border-radius:50%;cursor:pointer;
+  background:var(--card);color:var(--txt);font-size:18px;
+  box-shadow:5px 5px 12px var(--sd),-5px -5px 12px var(--sl);
+  transition:transform .15s,box-shadow .15s}
+.icon-btn:hover{transform:translateY(-2px)}
+.icon-btn:active{box-shadow:inset 4px 4px 8px var(--sd),inset -4px -4px 8px var(--sl);transform:none}
+.tabs{display:flex;gap:12px;padding:6px 20px 14px;overflow-x:auto}
+.tab{border:none;cursor:pointer;font-size:14px;padding:10px 20px;border-radius:999px;
+  background:var(--card);color:var(--dim);white-space:nowrap;
+  box-shadow:5px 5px 12px var(--sd),-5px -5px 12px var(--sl);
+  transition:all .2s}
+.tab.active{color:var(--primary);font-weight:600;
+  box-shadow:inset 4px 4px 9px var(--sd),inset -4px -4px 9px var(--sl)}
+main{max-width:1060px;margin:0 auto;padding:0 18px 60px}
+.tabpage{animation:fadeUp .3s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.card{background:var(--card);border-radius:var(--radius);padding:20px;margin-bottom:18px;
+  box-shadow:9px 9px 20px var(--sd),-9px -9px 20px var(--sl)}
+.card h2{margin:0 0 14px;font-size:16px}
+.card h3{font-size:14px;color:var(--dim);margin:18px 0 10px;font-weight:600}
+.status-head{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.dot{width:14px;height:14px;border-radius:50%;background:var(--dim)}
+.dot.on{background:var(--green);animation:pulse 1.6s infinite}
+.dot.off{background:var(--red)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(47,158,95,.5)}70%{box-shadow:0 0 0 10px rgba(47,158,95,0)}100%{box-shadow:0 0 0 0 rgba(47,158,95,0)}}
+.status-title{font-size:17px;font-weight:700}
+.badge{display:inline-block;padding:3px 12px;border-radius:999px;font-size:12px;
+  background:var(--primary-soft);color:var(--primary);font-weight:600}
+.badge.warn{background:rgba(217,119,6,.14);color:var(--orange)}
+.badge.bad{background:rgba(220,68,70,.13);color:var(--red)}
+.badge.ok{background:rgba(47,158,95,.14);color:var(--green)}
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--card);border-radius:var(--radius-s);padding:12px 14px;
+  box-shadow:inset 4px 4px 9px var(--in-d),inset -4px -4px 9px var(--in-l)}
+.stat-label{font-size:12px;color:var(--dim)}
+.stat-val{font-size:16px;font-weight:700;margin-top:2px;word-break:break-all}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+button{font-family:inherit}
+.btnrow button,.filterbar button{border:none;cursor:pointer;font-size:14px;
+  padding:10px 18px;border-radius:14px;background:var(--card);color:var(--txt);
+  box-shadow:5px 5px 12px var(--sd),-5px -5px 12px var(--sl);
+  transition:transform .15s,box-shadow .15s}
+.btnrow button:hover,.filterbar button:hover{transform:translateY(-2px);
+  box-shadow:7px 7px 16px var(--sd),-7px -7px 16px var(--sl)}
+.btnrow button:active,.filterbar button:active{transform:none;
+  box-shadow:inset 4px 4px 9px var(--sd),inset -4px -4px 9px var(--sl)}
+button.primary{background:var(--primary);color:#fff}
+button.danger{color:var(--red)}
+button:disabled{opacity:.5;cursor:default;transform:none}
+.note{font-size:13px;color:var(--dim);margin-top:8px}
+.note.err{color:var(--red)}
+#chart{width:100%;height:150px;display:block}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--dim);margin-top:6px}
+.lg::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.lg.down::before{background:var(--primary)}
+.lg.up::before{background:var(--green)}
+.filterbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.filterbar input,.filterbar select{background:var(--card);border:none;color:var(--txt);
+  border-radius:12px;padding:10px 14px;font-size:14px;font-family:inherit;
+  box-shadow:inset 4px 4px 9px var(--in-d),inset -4px -4px 9px var(--in-l);outline:none}
+.filterbar input{flex:1;min-width:160px}
+.check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);cursor:pointer}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.node-card{background:var(--card);border-radius:var(--radius);padding:16px;
+  box-shadow:7px 7px 16px var(--sd),-7px -7px 16px var(--sl);
+  transition:transform .18s,box-shadow .18s}
+.node-card:hover{transform:translateY(-3px);
+  box-shadow:10px 10px 22px var(--sd),-10px -10px 22px var(--sl)}
+.node-card.blocked{opacity:.62}
+.node-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.flag{font-size:26px}
+.node-country{font-weight:700}
+.node-id{font-size:12px;color:var(--dim)}
+.node-head .badge{margin-left:auto}
+.node-stats{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;color:var(--dim);margin-bottom:12px}
+.node-stats b{color:var(--txt);font-weight:600}
+.node-actions{display:flex;gap:8px;flex-wrap:wrap}
+.node-actions button{border:none;cursor:pointer;font-size:13px;padding:8px 14px;border-radius:var(--radius-s);
+  background:var(--card);color:var(--txt);
+  box-shadow:4px 4px 10px var(--sd),-4px -4px 10px var(--sl);transition:all .15s}
+.node-actions button:hover{transform:translateY(-1px)}
+.node-actions button:active{box-shadow:inset 3px 3px 7px var(--sd),inset -3px -3px 7px var(--sl)}
+.node-actions button.go{color:var(--primary);font-weight:600}
+.node-actions button.warn{color:var(--orange)}
+.set-group{background:var(--card);border-radius:var(--radius);padding:20px;margin-bottom:18px;
+  box-shadow:9px 9px 20px var(--sd),-9px -9px 20px var(--sl)}
+.set-group h3{margin:0 0 12px;font-size:15px}
+.set-row{margin-bottom:12px}
+.set-row label{display:block;font-size:13px;margin-bottom:6px;color:var(--dim)}
+.set-row input[type=text],.set-row input[type=number],.set-row input[type=password],.set-row select{
+  width:100%;background:var(--card);border:none;color:var(--txt);border-radius:12px;
+  padding:10px 14px;font-size:14px;font-family:inherit;outline:none;
+  box-shadow:inset 4px 4px 9px var(--in-d),inset -4px -4px 9px var(--in-l)}
+.set-row input[type=checkbox]{display:none}
+.toggle{position:relative;display:inline-block;width:52px;height:30px;border-radius:999px;cursor:pointer;
+  background:var(--card);box-shadow:inset 4px 4px 8px var(--in-d),inset -4px -4px 8px var(--in-l);
+  transition:background .25s;vertical-align:middle}
+.toggle::after{content:"";position:absolute;top:4px;left:4px;width:22px;height:22px;border-radius:50%;
+  background:var(--sl);box-shadow:3px 3px 7px var(--sd);transition:left .25s}
+.set-row input[type=checkbox]:checked + .toggle{background:var(--primary)}
+.set-row input[type=checkbox]:checked + .toggle::after{left:26px}
+.big{font-size:16px;padding:13px 34px}
+#toast{position:fixed;right:20px;bottom:20px;z-index:99;display:flex;flex-direction:column;gap:10px}
+.toast-item{background:var(--card);color:var(--txt);border-radius:14px;padding:12px 18px;font-size:14px;
+  box-shadow:7px 7px 16px var(--sd),-7px -7px 16px var(--sl);
+  animation:toastIn .25s ease;max-width:320px}
+.toast-item.ok{border-left:4px solid var(--green)}
+.toast-item.err{border-left:4px solid var(--red)}
+@keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+.log-list{display:flex;flex-direction:column;gap:8px;max-height:520px;overflow-y:auto;padding:4px}
+.log-item{background:var(--card);border-radius:12px;padding:9px 14px;font-size:12.5px;
+  font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;
+  box-shadow:4px 4px 10px var(--sd),-4px -4px 10px var(--sl)}
+.log-item.warn{background:rgba(217,119,6,.1)}
+.log-item.error{background:rgba(220,68,70,.1)}
+.log-list::-webkit-scrollbar,.cards::-webkit-scrollbar{width:10px}
+.log-list::-webkit-scrollbar-thumb{background:var(--sd);border-radius:8px}
+.ev{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:12px;margin-bottom:8px;
+  background:var(--card);box-shadow:4px 4px 10px var(--sd),-4px -4px 10px var(--sl);font-size:13px}
+.ev .t{color:var(--dim);font-size:12px;white-space:nowrap}
+.ev-ico{font-size:15px}
+.empty{text-align:center;color:var(--dim);padding:30px;font-size:14px}
+@media(max-width:640px){
+  .status-grid{grid-template-columns:repeat(2,1fr)}
+  .cards{grid-template-columns:1fr}
+  main{padding:0 12px 50px}
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>🌐 Yu-proxy</h1>
-  <div class="sub">免费 VPNGate 节点 · 一键上网 · 隧道出口代理</div>
-
-  <div class="card">
-    <h2>状态</h2>
-    <div class="status-grid">
-      <div class="stat"><div class="k">VPN 连接</div><div class="v" id="st-conn">-</div></div>
-      <div class="stat"><div class="k">当前节点</div><div class="v" id="st-server">-</div></div>
-      <div class="stat"><div class="k">隧道 IP</div><div class="v" id="st-tunip">-</div></div>
-      <div class="stat"><div class="k">已连接时长</div><div class="v" id="st-uptime">-</div></div>
-      <div class="stat"><div class="k">代理流量 ↓/↑</div><div class="v" id="st-traffic">-</div></div>
-      <div class="stat"><div class="k">节点缓存</div><div class="v" id="st-cache">-</div></div>
-    </div>
-    <div class="btnrow">
-      <button class="primary" id="btn-best" onclick="connectBest()">⚡ 一键连接最优</button>
-      <button class="danger" id="btn-disc" onclick="disconnect()">断开</button>
-      <button id="btn-refresh" onclick="refreshServers()">🔄 刷新节点列表</button>
-      <button onclick="openSettings()">⚙️ 设置</button>
-      <button id="btn-logout" onclick="logout()" style="display:none">退出登录</button>
-    </div>
-    <div class="note" id="proxy-info"></div>
-    <div class="note" id="last-error" style="color:var(--red); display:none"></div>
+<header class="topbar">
+  <div class="logo">🌐 Yu-proxy</div>
+  <div class="top-actions">
+    <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="明暗主题切换">🌙</button>
+    <button class="icon-btn" id="btn-logout" onclick="logout()" style="display:none" title="退出登录">⏻</button>
   </div>
-
-  <div class="card">
-    <h2>节点列表</h2>
-    <div class="toolbar">
-      <span class="meta" id="srv-meta"></span><span class="spacer"></span>
-      <input id="flt" placeholder="过滤：国家 / IP" oninput="renderServers()"
-             style="background:#101722;border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px;">
+</header>
+<nav class="tabs">
+  <button class="tab active" data-tab="dash" onclick="switchTab('dash')">📊 仪表盘</button>
+  <button class="tab" data-tab="nodes" onclick="switchTab('nodes')">🖥️ 节点</button>
+  <button class="tab" data-tab="settings" onclick="switchTab('settings')">⚙️ 设置</button>
+  <button class="tab" data-tab="logs" onclick="switchTab('logs')">📝 日志</button>
+</nav>
+<main>
+  <section id="tab-dash" class="tabpage">
+    <div class="card">
+      <div class="status-head">
+        <span class="dot" id="st-dot"></span>
+        <span class="status-title" id="st-title">加载中…</span>
+        <span class="badge" id="st-mode" style="display:none"></span>
+        <span class="badge warn" id="st-paused" style="display:none">已暂停自动切换</span>
+      </div>
+      <div class="status-grid">
+        <div class="stat"><div class="stat-label">出口节点</div><div class="stat-val" id="st-node">-</div></div>
+        <div class="stat"><div class="stat-label">出口 IP</div><div class="stat-val" id="st-ip">-</div></div>
+        <div class="stat"><div class="stat-label">节点延迟</div><div class="stat-val" id="st-ping">-</div></div>
+        <div class="stat"><div class="stat-label">已连接时长</div><div class="stat-val" id="st-uptime">-</div></div>
+        <div class="stat"><div class="stat-label">⬇ 下行</div><div class="stat-val" id="st-down">-</div></div>
+        <div class="stat"><div class="stat-label">⬆ 上行</div><div class="stat-val" id="st-up">-</div></div>
+      </div>
+      <div class="note err" id="last-error" style="display:none"></div>
     </div>
-    <div style="overflow-x:auto">
-    <table>
-      <thead><tr><th>国家</th><th>IP</th><th>延迟</th><th>评分</th><th>速度</th>
-      <th>会话</th><th>协议</th><th>操作</th></tr></thead>
-      <tbody id="srv-body"><tr><td colspan="8" class="meta">加载中…</td></tr></tbody>
-    </table>
+    <div class="card">
+      <h2>实时网速</h2>
+      <canvas id="chart"></canvas>
+      <div class="legend"><span class="lg down">下行</span><span class="lg up">上行</span></div>
     </div>
-  </div>
-
-  <div class="card">
-    <h2>日志</h2>
-    <div id="log">加载中…</div>
-    <div class="btnrow" style="margin-top:10px">
-      <button onclick="loadLog()">刷新日志</button>
+    <div class="card">
+      <h2>快捷操作</h2>
+      <div class="btnrow">
+        <button class="primary" id="btn-best" onclick="connectBest()">⚡ 一键连接最优</button>
+        <button onclick="rotateNow()">🔀 手动切换节点</button>
+        <button onclick="togglePause()" id="btn-pause">⏸ 暂停自动切换</button>
+        <button class="danger" onclick="disconnect()">断开</button>
+        <button onclick="refreshServers()">🔄 刷新节点列表</button>
+      </div>
+      <div class="note" id="proxy-info"></div>
     </div>
-  </div>
-</div>
+    <div class="card">
+      <h2>最近事件</h2>
+      <div id="events">加载中…</div>
+    </div>
+  </section>
 
-<div id="settings-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:50; overflow-y:auto;">
-  <div style="max-width:620px; margin:36px auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px;">
-    <h2 style="margin:0 0 14px; font-size:16px;">⚙️ 设置</h2>
+  <section id="tab-nodes" class="tabpage" hidden>
+    <div class="card filterbar">
+      <input id="f-q" placeholder="🔍 搜索 国家 / IP / ID…" oninput="renderNodes()">
+      <select id="f-sort" onchange="renderNodes()">
+        <option value="default">默认排序</option>
+        <option value="ping">延迟从低到高</option>
+        <option value="score">评分从高到低</option>
+        <option value="speed">带宽从高到低</option>
+      </select>
+      <label class="check"><input type="checkbox" id="f-hide-blocked" onchange="renderNodes()"> 隐藏已拉黑</label>
+      <span class="note" id="nodes-count"></span>
+    </div>
+    <div class="cards" id="nodes"><div class="empty">加载中…</div></div>
+  </section>
+
+  <section id="tab-settings" class="tabpage" hidden>
     <div id="settings-body"></div>
-    <div class="btnrow" style="margin-top:16px">
-      <button class="primary" id="btn-save" onclick="saveSettings()">保存</button>
-      <button onclick="closeSettings()">取消</button>
-    </div>
-    <div class="note" id="settings-msg" style="margin-top:8px"></div>
-  </div>
-</div>
+    <div class="btnrow"><button class="primary big" id="btn-save" onclick="saveSettings()">💾 保存设置</button></div>
+    <div class="note" id="settings-msg"></div>
+    <div class="set-group"><h3>🚫 黑名单管理</h3><div id="blacklist">加载中…</div></div>
+  </section>
 
+  <section id="tab-logs" class="tabpage" hidden>
+    <div class="card filterbar">
+      <input id="log-q" placeholder="🔍 搜索日志…" oninput="renderLog()">
+      <select id="log-level" onchange="renderLog()">
+        <option value="">全部级别</option><option value="INFO">INFO</option>
+        <option value="WARN">WARN</option><option value="ERROR">ERROR</option>
+      </select>
+      <button onclick="loadLog()">刷新</button>
+      <button onclick="exportLog()">导出</button>
+    </div>
+    <div class="log-list" id="log"><div class="empty">加载中…</div></div>
+  </section>
+</main>
+<div id="toast"></div>
 <script>
-const SETTING_FIELDS = [
-  {title:'代理', fields:[
-    ['proxy.bind','监听地址','text'],
-    ['proxy.port','端口','number'],
-    ['proxy.user','用户名（留空=不认证）','text'],
-    ['proxy.pass','密码','password'],
-    ['proxy.dns_server','隧道 DNS','text'],
-    ['proxy.allow_direct_fallback','VPN断开时直连兜底','checkbox'],
-  ]},
-  {title:'面板', fields:[
-    ['panel.bind','监听地址','text'],
-    ['panel.port','端口','number'],
-    ['panel.token','访问 Token','text','regen'],
-    ['panel.user','登录用户名（留空=禁用登录）','text'],
-    ['panel.pass','登录密码','password'],
-  ]},
-  {title:'VPN', fields:[
-    ['vpn.device','隧道网卡名','text'],
-    ['vpn.autoconnect','开机自动连接','checkbox'],
-    ['vpn.prefer_countries','偏好国家（逗号分隔，如 JP,KR,SG）','text'],
-    ['vpn.tcp_only','只用 TCP 节点','checkbox'],
-    ['vpn.connect_retries','一键连接最多顺延试几个节点','number'],
-  ]},
-  {title:'看门狗', fields:[
-    ['watchdog.enabled','启用故障自动切换','checkbox'],
-    ['watchdog.interval','探测间隔（秒）','number'],
-    ['watchdog.fail_threshold','连续失败几次后切换','number'],
-    ['watchdog.max_retries','每次故障最多试几个节点','number'],
-  ]},
-];
-function cfgGet(cfg, path) {
-  return path.split('.').reduce((o,k) => (o==null?null:o[k]), cfg);
-}
-function cfgSet(cfg, path, val) {
-  const ks = path.split('.'); let o = cfg;
-  for (let i=0;i<ks.length-1;i++) { o[ks[i]] = o[ks[i]]||{}; o = o[ks[i]]; }
-  o[ks[ks.length-1]] = val;
-}
-let curConfig = null;
-async function openSettings() {
-  const m = document.getElementById('settings-msg'); m.textContent = '';
-  try {
-    const r = await api('/api/config');
-    if (!r.ok) throw new Error(r.error||'读取失败');
-    curConfig = r.config;
-    const body = document.getElementById('settings-body');
-    body.innerHTML = SETTING_FIELDS.map(sec =>
-      '<h3 style="font-size:14px;color:var(--dim);margin:14px 0 8px">'+sec.title+'</h3>' +
-      sec.fields.map(f => {
-        const [path,label,type,extra] = f;
-        let v = cfgGet(curConfig, path);
-        if (Array.isArray(v)) v = v.join(',');
-        const id = 'cfg-'+path.split('.').join('-');
-        let input;
-        if (type === 'checkbox')
-          input = '<input type="checkbox" id="'+id+'"'+(v?' checked':'')+' style="width:auto">';
-        else
-          input = '<input id="'+id+'" type="'+type+'" value="'+esc(v==null?'':v)+'"'
-            +' style="background:#101722;border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px;width:100%;box-sizing:border-box">'
-            + (extra==='regen' ? ' <button onclick="regenToken()" style="margin-top:6px">重新生成</button>' : '');
-        return '<div style="margin-bottom:10px"><div style="font-size:13px;margin-bottom:4px">'+label+'</div>'+input+'</div>';
-      }).join('')
-    ).join('');
-    document.getElementById('settings-modal').style.display = 'block';
-  } catch(e) { alert('读取设置失败：'+e.message); }
-}
-function closeSettings() {
-  document.getElementById('settings-modal').style.display = 'none';
-}
-function regenToken() {
-  const bytes = new Uint8Array(24); crypto.getRandomValues(bytes);
-  const t = btoa(String.fromCharCode(...bytes)).replace(/[^a-zA-Z0-9]/g,'').slice(0,32);
-  document.getElementById('cfg-panel-token').value = t;
-}
-async function saveSettings() {
-  const btn = document.getElementById('btn-save');
-  const m = document.getElementById('settings-msg');
-  btn.disabled = true; m.textContent = '保存中…'; m.style.color = 'var(--dim)';
-  try {
-    SETTING_FIELDS.forEach(sec => sec.fields.forEach(f => {
-      const [path,,type] = f;
-      const el = document.getElementById('cfg-'+path.split('.').join('-'));
-      let v = type==='checkbox' ? el.checked : el.value.trim();
-      if ((path==='proxy.port'||path==='panel.port')) v = parseInt(v,10);
-      if (['watchdog.interval','watchdog.fail_threshold','watchdog.max_retries','vpn.connect_retries'].includes(path)) v = parseInt(v,10);
-      cfgSet(curConfig, path, v);
-    }));
-    const r = await api('/api/config','POST',{config:curConfig});
-    if (!r.ok) throw new Error(r.error||'保存失败');
-    m.textContent = '已保存，配置即时生效';
-    m.style.color = 'var(--green)';
-    if (r.panel_moved) {
-      m.textContent += '，面板地址已变更，3 秒后跳转…';
-      setTimeout(() => { location.href = r.panel_url.replace('0.0.0.0', location.hostname); }, 3000);
-    } else {
-      setTimeout(closeSettings, 1200);
-    }
-    loadStatus();
-  } catch(e) {
-    m.textContent = '保存失败：'+e.message; m.style.color = 'var(--red)';
-  }
-  btn.disabled = false;
-}
-function logout() { location.href = '/logout'; }
 const token = new URLSearchParams(location.search).get('token') || '';
 function api(path, method, body) {
   const url = path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
@@ -251,113 +279,498 @@ function api(path, method, body) {
     body: body ? JSON.stringify(body) : undefined,
   }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
 }
-let servers = [];
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 function fmtBytes(n) {
   if (n >= 1e9) return (n/1e9).toFixed(2)+' GB';
   if (n >= 1e6) return (n/1e6).toFixed(1)+' MB';
   if (n >= 1e3) return (n/1e3).toFixed(0)+' KB';
-  return n+' B';
+  return Math.floor(n)+' B';
+}
+function fmtBps(bps) {
+  if (bps >= 1e9) return (bps/1e9).toFixed(2)+' Gbps';
+  if (bps >= 1e6) return (bps/1e6).toFixed(1)+' Mbps';
+  if (bps >= 1e3) return (bps/1e3).toFixed(0)+' Kbps';
+  return Math.floor(bps)+' bps';
 }
 function fmtDur(s) {
-  s = Math.floor(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  s = Math.floor(s || 0); const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
   if (h) return h+'小时'+m+'分';
-  if (m) return m+'分';
+  if (m) return m+'分'+(s%60)+'秒';
   return s+'秒';
 }
-function fmtAgo(ts) {
-  if (!ts) return '无';
-  const d = Math.floor(Date.now()/1000 - ts);
-  if (d < 60) return d+'秒前';
-  if (d < 3600) return Math.floor(d/60)+'分钟前';
-  return Math.floor(d/3600)+'小时前';
+function fmtTime(ts) {
+  const d = new Date(ts*1000);
+  const p = n => String(n).padStart(2,'0');
+  return (d.getMonth()+1)+'-'+d.getDate()+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
 }
+function flag(cc) {
+  if (!cc || cc.length !== 2) return '🏳️';
+  const A = 127397;
+  return String.fromCodePoint(cc.toUpperCase().charCodeAt(0)+A, cc.toUpperCase().charCodeAt(1)+A);
+}
+function toast(msg, type) {
+  const box = document.getElementById('toast');
+  const el = document.createElement('div');
+  el.className = 'toast-item ' + (type || '');
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3200);
+}
+
+/* ---------- 主题 ---------- */
+function initTheme() {
+  const t = localStorage.getItem('yu-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('theme-btn').textContent = t === 'dark' ? '☀️' : '🌙';
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const t = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('yu-theme', t);
+  document.getElementById('theme-btn').textContent = t === 'dark' ? '☀️' : '🌙';
+  drawChart();
+}
+
+/* ---------- 标签页 ---------- */
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tabpage').forEach(s => s.hidden = s.id !== 'tab-' + name);
+  if (name === 'nodes' && !servers.length) loadNodes();
+  if (name === 'settings' && !curConfig) openSettings();
+  if (name === 'settings') loadBlacklist();
+  if (name === 'logs' && !logLines.length) loadLog();
+  if (name === 'dash') { loadEvents(); }
+}
+
+/* ---------- 仪表盘 ---------- */
+let tpSamples = [];
 async function loadStatus() {
   try {
     const s = await api('/api/status');
-    const c = s.vpn.connected;
-    document.getElementById('st-conn').innerHTML =
-      '<span class="dot '+(c?'on':'off')+'"></span>'+(c?'已连接':'未连接');
-    document.getElementById('st-server').textContent =
-      s.vpn.server_id ? (s.vpn.country||'')+' '+s.vpn.server_id : '-';
-    document.getElementById('st-tunip').textContent = s.vpn.tun_ip || '-';
-    document.getElementById('st-uptime').textContent =
-      s.vpn.uptime_s ? fmtDur(s.vpn.uptime_s) : '-';
-    document.getElementById('st-traffic').textContent =
-      fmtBytes(s.proxy.rx)+' / '+fmtBytes(s.proxy.tx);
-    document.getElementById('st-cache').textContent =
-      s.server_count+' 个 · '+fmtAgo(s.cache_at);
-    document.getElementById('proxy-info').textContent =
-      '代理地址：' + s.proxy.listen + '（HTTP / HTTPS CONNECT / SOCKS5 二合一）'
-      + (s.proxy.auth ? ' · 已启用账号认证' : '');
-    const le = document.getElementById('last-error');
-    if (s.last_error) {
-      le.style.display = 'block';
-      le.textContent = '上次连接失败：' + s.last_error;
-    } else {
-      le.style.display = 'none';
+    const v = s.vpn, c = v.connected;
+    const dot = document.getElementById('st-dot');
+    dot.className = 'dot ' + (c ? 'on' : 'off');
+    document.getElementById('st-title').textContent = c ? '🟢 已连接' : '🔴 未连接';
+    const modeNames = {failover:'主备模式', rotate:'轮询模式', random:'权重随机'};
+    const modeEl = document.getElementById('st-mode');
+    modeEl.style.display = '';
+    modeEl.textContent = modeNames[s.scheduler.mode] || s.scheduler.mode;
+    document.getElementById('st-paused').style.display = s.scheduler.paused ? '' : 'none';
+    document.getElementById('btn-pause').textContent = s.scheduler.paused ? '▶ 恢复自动切换' : '⏸ 暂停自动切换';
+    document.getElementById('st-node').textContent = c && v.country ? v.country + ' ' + (v.server_ip || '') : '-';
+    document.getElementById('st-ip').textContent = s.exit_ip || v.tun_ip || '-';
+    const hms = s.health && s.health.layers && s.health.layers.tcp && s.health.layers.tcp.ms;
+    document.getElementById('st-ping').textContent = hms != null ? hms + ' ms' : '-';
+    document.getElementById('st-uptime').textContent = c ? fmtDur(v.uptime_s) : '-';
+    if (tpSamples.length) {
+      const last = tpSamples[tpSamples.length - 1];
+      document.getElementById('st-down').textContent = fmtBps(last[2]);
+      document.getElementById('st-up').textContent = fmtBps(last[1]);
     }
-    document.getElementById('btn-logout').style.display =
-      s.login_enabled ? '' : 'none';
+    const le = document.getElementById('last-error');
+    if (s.last_error) { le.style.display = 'block'; le.textContent = '上次连接失败：' + s.last_error; }
+    else le.style.display = 'none';
+    document.getElementById('proxy-info').textContent =
+      '代理地址：' + s.proxy.listen + '（HTTP / HTTPS CONNECT / SOCKS5 三合一）'
+      + (s.proxy.auth ? ' · 已启用账号认证' : '')
+      + ' · 累计 ' + fmtBytes(s.proxy.down_bytes) + ' / ' + fmtBytes(s.proxy.up_bytes);
+    document.getElementById('btn-logout').style.display = s.login_enabled ? '' : 'none';
   } catch(e) {
     if (/401/.test(e.message)) location.href = '/login';
   }
 }
-async function loadServers() {
+async function tickThroughput() {
+  try {
+    const r = await api('/api/throughput');
+    tpSamples = r.samples || [];
+    drawChart();
+  } catch(e) {}
+}
+function drawChart() {
+  const c = document.getElementById('chart');
+  if (!c || !c.offsetParent) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = c.clientWidth, H = 150;
+  if (c.width !== W * dpr) { c.width = W * dpr; c.height = H * dpr; }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (tpSamples.length < 2) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--dim');
+    ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('等待网速数据…', W/2, H/2);
+    return;
+  }
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  let max = 1;
+  tpSamples.forEach(s => { max = Math.max(max, s[1], s[2]); });
+  max *= 1.15;
+  const X = i => 8 + i * (W - 16) / Math.max(1, tpSamples.length - 1);
+  const Y = v => H - 12 - (v / max) * (H - 28);
+  const line = (idx, color) => {
+    ctx.beginPath();
+    tpSamples.forEach((s, i) => { const x = X(i), y = Y(s[idx]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
+    ctx.lineTo(X(tpSamples.length - 1), H - 12); ctx.lineTo(X(0), H - 12); ctx.closePath();
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, color + '44'); g.addColorStop(1, color + '00');
+    ctx.fillStyle = g; ctx.fill();
+  };
+  line(2, css('--primary'));
+  line(1, css('--green'));
+}
+const EV_ICON = {connect:'✅', disconnect:'🔌', switch:'🔀', fail:'⚠️', block:'🚫', unblock:'♻️', pause:'⏸', resume:'▶', refresh:'🔄'};
+async function loadEvents() {
+  try {
+    const r = await api('/api/events');
+    const box = document.getElementById('events');
+    const evs = (r.events || []).slice(-5).reverse();
+    if (!evs.length) { box.innerHTML = '<div class="empty">暂无事件</div>'; return; }
+    box.innerHTML = evs.map(e =>
+      '<div class="ev"><span class="ev-ico">' + (EV_ICON[e.type] || 'ℹ️') + '</span>' +
+      '<div><div>' + esc(e.msg) + '</div><div class="t">' + fmtTime(e.t) + '</div></div></div>'
+    ).join('');
+  } catch(e) {}
+}
+
+/* ---------- 快捷操作 ---------- */
+async function connectBest() {
+  const btn = document.getElementById('btn-best');
+  btn.disabled = true; btn.textContent = '连接中…';
+  try {
+    const r = await api('/api/connect_best', 'POST', {});
+    toast(r.msg || '已发起连接', 'ok');
+  } catch(e) { toast('失败：' + e.message, 'err'); }
+  btn.disabled = false; btn.textContent = '⚡ 一键连接最优';
+  setTimeout(loadStatus, 2000);
+}
+async function rotateNow() {
+  try {
+    const r = await api('/api/rotate_now', 'POST', {});
+    if (!r.ok) throw new Error(r.error || '切换失败');
+    toast(r.msg || '正在切换…', 'ok');
+  } catch(e) { toast('切换失败：' + e.message, 'err'); }
+  setTimeout(loadStatus, 2000);
+}
+async function togglePause() {
+  try {
+    const s = await api('/api/status');
+    const r = await api(s.scheduler.paused ? '/api/resume' : '/api/pause', 'POST', {});
+    toast(s.scheduler.paused ? '已恢复自动切换' : '已暂停自动切换', 'ok');
+    loadStatus();
+  } catch(e) { toast('操作失败：' + e.message, 'err'); }
+}
+async function disconnect() {
+  if (!confirm('断开 VPN 连接？')) return;
+  try { await api('/api/disconnect', 'POST', {}); toast('已断开', 'ok'); }
+  catch(e) { toast('失败：' + e.message, 'err'); }
+  loadStatus(); loadEvents();
+}
+async function refreshServers() {
+  try {
+    const r = await api('/api/refresh', 'POST', {});
+    if (!r.ok) throw new Error(r.error || '刷新失败');
+    toast('节点列表已更新，共 ' + r.count + ' 个', 'ok');
+    loadNodes(true);
+  } catch(e) { toast('刷新失败：' + e.message, 'err'); }
+}
+function logout() { location.href = '/logout'; }
+
+/* ---------- 节点列表 ---------- */
+let servers = [];
+async function loadNodes(force) {
+  if (servers.length && !force) { renderNodes(); return; }
   try {
     const r = await api('/api/servers');
     servers = r.servers || [];
-    document.getElementById('srv-meta').textContent =
-      '共 '+servers.length+' 个节点 · 缓存于 '+fmtAgo(r.cached_at);
-    renderServers();
+    renderNodes();
   } catch(e) {
-    document.getElementById('srv-body').innerHTML =
-      '<tr><td colspan="8" class="meta">加载失败：'+e.message+'</td></tr>';
+    document.getElementById('nodes').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>';
   }
 }
-function renderServers() {
-  const q = (document.getElementById('flt').value || '').toLowerCase();
-  const rows = servers.filter(s =>
-    !q || (s.country_zh||'').toLowerCase().includes(q)
-        || (s.country||'').toLowerCase().includes(q)
-        || (s.ip||'').includes(q));
-  const tb = document.getElementById('srv-body');
-  if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="meta">无匹配节点</td></tr>'; return; }
-  tb.innerHTML = rows.slice(0, 200).map(s =>
-    '<tr><td>'+esc(s.country_zh||s.country)+' '+(s.country_short||'')+'</td>'
-    +'<td><code>'+esc(s.ip)+'</code></td>'
-    +'<td>'+(s.ping? s.ping+'ms':'-')+'</td>'
-    +'<td>'+s.score.toLocaleString()+'</td>'
-    +'<td>'+esc(s.speed_h||'')+'</td>'
-    +'<td>'+s.sessions+'</td>'
-    +'<td><span class="pill '+(s.proto==='tcp'?'tcp':'')+'">'+s.proto.toUpperCase()+'</span></td>'
-    +'<td><button onclick="connectId(&quot;'+esc(s.id)+'&quot;)">连接</button></td></tr>'
-  ).join('');
+function nodeMatches(s, q) {
+  q = q.trim().toLowerCase();
+  if (!q) return true;
+  return (s.country_zh + ' ' + s.country + ' ' + s.ip + ' ' + s.id).toLowerCase().includes(q);
 }
-function esc(x){ return String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-async function busy(btn, fn) {
-  btn.disabled = true;
-  try { await fn(); } catch(e) { alert('操作失败：'+e.message); }
-  btn.disabled = false;
-  loadStatus();
+function renderNodes() {
+  const q = document.getElementById('f-q').value;
+  const sort = document.getElementById('f-sort').value;
+  const hideBlocked = document.getElementById('f-hide-blocked').checked;
+  let list = servers.filter(s => nodeMatches(s, q));
+  if (hideBlocked) list = list.filter(s => !s.blacklisted);
+  if (sort === 'ping') list = list.slice().sort((a, b) => (a.ping || 1e9) - (b.ping || 1e9));
+  else if (sort === 'score') list = list.slice().sort((a, b) => b.score - a.score);
+  else if (sort === 'speed') list = list.slice().sort((a, b) => b.speed_mbps - a.speed_mbps);
+  document.getElementById('nodes-count').textContent = '共 ' + list.length + ' 个节点';
+  const box = document.getElementById('nodes');
+  if (!list.length) { box.innerHTML = '<div class="empty">没有匹配的节点</div>'; return; }
+  box.innerHTML = list.slice(0, 200).map(s => {
+    const rate = s.success_rate == null ? '无记录' : Math.round(s.success_rate * 100) + '%';
+    const badges = [];
+    if (s.score >= 800) badges.push('<span class="badge ok">高分</span>');
+    if (s.blacklisted) badges.push('<span class="badge bad">' + (s.blacklist_reason === 'manual' ? '已拉黑' : '临时拉黑') + '</span>');
+    const actions = s.blacklisted && s.blacklist_reason === 'manual'
+      ? '<button onclick="unblockNode(\\'' + s.id + '\\')">♻️ 解除拉黑</button>'
+      : '<button class="go" onclick="connectNode(\\'' + s.id + '\\')">连接</button>'
+        + '<button onclick="probeNode(this,\\'' + s.id + '\\')">测速</button>'
+        + (s.blacklisted ? '' : '<button class="warn" onclick="blockNode(\\'' + s.id + '\\')">拉黑</button>');
+    return '<div class="node-card' + (s.blacklisted ? ' blocked' : '') + '">' +
+      '<div class="node-head"><span class="flag">' + flag(s.country_short) + '</span>' +
+      '<div><div class="node-country">' + esc(s.country_zh || s.country) + '</div>' +
+      '<div class="node-id">' + esc(s.id) + ' · ' + esc(s.ip) + ' · ' + esc(s.proto.toUpperCase()) + '</div></div>' +
+      badges.join('') + '</div>' +
+      '<div class="node-stats">' +
+      '<span>延迟 <b>' + (s.ping > 0 ? s.ping + 'ms' : '-') + '</b></span>' +
+      '<span>带宽 <b>' + esc(s.speed_h) + '</b></span>' +
+      '<span>评分 <b>' + s.score + '</b></span>' +
+      '<span>在线 <b>' + esc(s.uptime_h) + '</b></span>' +
+      '<span>成功率 <b>' + rate + '</b></span>' +
+      '<span class="probe-res"></span>' +
+      '</div>' +
+      '<div class="node-actions">' + actions + '</div>' +
+      '</div>';
+  }).join('') + (list.length > 200 ? '<div class="empty">仅显示前 200 个，请用搜索过滤</div>' : '');
 }
-function connectId(id) { busy(event.target, () => api('/api/connect','POST',{id}).then(r=>{ if(!r.ok) throw new Error(r.error||'连接失败'); })); }
-function connectBest() { busy(document.getElementById('btn-best'), () => api('/api/connect_best','POST').then(r=>{ if(!r.ok) throw new Error(r.error||'连接失败'); })); }
-function disconnect() { busy(document.getElementById('btn-disc'), () => api('/api/disconnect','POST')); }
-function refreshServers() {
-  const b = document.getElementById('btn-refresh');
-  busy(b, async () => { const r = await api('/api/refresh','POST'); if(!r.ok) throw new Error(r.error||'刷新失败'); await loadServers(); });
-}
-async function loadLog() {
+async function connectNode(id) {
   try {
-    const r = await api('/api/log?n=120');
-    const el = document.getElementById('log');
-    el.textContent = r.lines.join('\\n') || '(暂无日志)';
-    el.scrollTop = el.scrollHeight;
+    const r = await api('/api/connect', 'POST', {id});
+    if (!r.ok) throw new Error(r.error || '连接失败');
+    toast(r.msg || '正在连接…', 'ok');
+    switchTab('dash');
+  } catch(e) { toast('连接失败：' + e.message, 'err'); }
+  setTimeout(loadStatus, 2000);
+}
+async function probeNode(btn, id) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '测速中…';
+  try {
+    const r = await api('/api/probe', 'POST', {id});
+    const card = btn.closest('.node-card');
+    const res = card.querySelector('.probe-res');
+    if (r.ok) { res.innerHTML = '实测 <b>' + r.ms + 'ms</b>'; }
+    else { res.innerHTML = '实测 <b>超时</b>'; }
+  } catch(e) { toast('测速失败：' + e.message, 'err'); }
+  btn.disabled = false; btn.textContent = old;
+}
+async function blockNode(id) {
+  if (!confirm('拉黑节点 ' + id + '？之后调度会自动跳过它。')) return;
+  try {
+    await api('/api/blacklist_add', 'POST', {id});
+    toast('已拉黑', 'ok'); loadNodes(true);
+  } catch(e) { toast('操作失败：' + e.message, 'err'); }
+}
+async function unblockNode(id) {
+  try {
+    await api('/api/blacklist_remove', 'POST', {id});
+    toast('已解除拉黑', 'ok'); loadNodes(true);
+  } catch(e) { toast('操作失败：' + e.message, 'err'); }
+}
+
+/* ---------- 设置 ---------- */
+const SETTING_FIELDS = [
+  {title:'🌐 代理', fields:[
+    ['proxy.bind','监听地址','text'],
+    ['proxy.port','端口','number'],
+    ['proxy.user','用户名（留空=不认证）','text'],
+    ['proxy.pass','密码','password'],
+    ['proxy.allow_ips','允许访问的 IP（逗号分隔，留空=不限制）','text'],
+    ['proxy.dns_server','隧道 DNS','text'],
+    ['proxy.allow_direct_fallback','VPN 断开时直连兜底','checkbox'],
+  ]},
+  {title:'🖥️ 面板', fields:[
+    ['panel.bind','监听地址','text'],
+    ['panel.port','端口','number'],
+    ['panel.token','访问 Token','text','regen'],
+    ['panel.user','登录用户名（留空=禁用登录）','text'],
+    ['panel.pass','登录密码','password'],
+  ]},
+  {title:'🔌 VPN', fields:[
+    ['vpn.device','隧道网卡名','text'],
+    ['vpn.autoconnect','开机自动连接','checkbox'],
+    ['vpn.prefer_countries','偏好国家（逗号分隔，如 JP,KR,SG）','text'],
+    ['vpn.tcp_only','只用 TCP 节点','checkbox'],
+    ['vpn.connect_retries','一键连接最多顺延试几个节点','number'],
+  ]},
+  {title:'📡 节点源', fields:[
+    ['vpngate.api_urls','API 源（逗号分隔，依次尝试）','text'],
+    ['vpngate.refresh_interval_h','抓取间隔（小时）','number'],
+  ]},
+  {title:'🎯 节点过滤', fields:[
+    ['filter.countries_allow','只用这些国家（逗号分隔，留空=不限）','text'],
+    ['filter.countries_block','排除这些国家（逗号分隔）','text'],
+    ['filter.min_bandwidth_mbps','最低带宽（Mbps，0=不限）','number'],
+  ]},
+  {title:'🔀 调度策略', fields:[
+    ['scheduler.mode','调度模式','select',[['failover','主备模式（默认）'],['rotate','轮询模式'],['random','权重随机']]],
+    ['scheduler.rotate_interval_min','轮询间隔（分钟）','number'],
+    ['scheduler.force_rotation_h','强制换出口 IP 间隔（小时，0=关闭）','number'],
+  ]},
+  {title:'🐶 看门狗', fields:[
+    ['watchdog.enabled','启用故障自动切换','checkbox'],
+    ['watchdog.health_check','多层健康检查（TCP + 真实外网探测）','checkbox'],
+    ['watchdog.health_interval','健康检查间隔（秒）','number'],
+    ['watchdog.interval','探测间隔（秒）','number'],
+    ['watchdog.fail_threshold','连续失败几次后切换','number'],
+    ['watchdog.max_retries','每次故障最多试几个节点','number'],
+  ]},
+];
+const LIST_FIELDS = ['vpn.prefer_countries','filter.countries_allow','filter.countries_block','vpngate.api_urls','proxy.allow_ips'];
+const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','filter.min_bandwidth_mbps','scheduler.rotate_interval_min','watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries'];
+const FLOAT_FIELDS = ['scheduler.force_rotation_h'];
+function cfgGet(cfg, path) { return path.split('.').reduce((o,k) => (o == null ? null : o[k]), cfg); }
+function cfgSet(cfg, path, val) {
+  const ks = path.split('.'); let o = cfg;
+  for (let i = 0; i < ks.length - 1; i++) { o[ks[i]] = o[ks[i]] || {}; o = o[ks[i]]; }
+  o[ks[ks.length - 1]] = val;
+}
+function fieldId(path) { return 'cfg-' + path.split('.').join('-'); }
+let curConfig = null;
+async function openSettings() {
+  const m = document.getElementById('settings-msg'); m.textContent = '';
+  try {
+    const r = await api('/api/config');
+    if (!r.ok) throw new Error(r.error || '读取失败');
+    curConfig = r.config;
+    const body = document.getElementById('settings-body');
+    body.innerHTML = SETTING_FIELDS.map(sec =>
+      '<div class="set-group"><h3>' + sec.title + '</h3>' +
+      sec.fields.map(f => {
+        const path = f[0], label = f[1], type = f[2], extra = f[3];
+        let v = cfgGet(curConfig, path);
+        if (Array.isArray(v)) v = v.join(',');
+        const id = fieldId(path);
+        let input;
+        if (type === 'checkbox') {
+          input = '<input type="checkbox" id="' + id + '"' + (v ? ' checked' : '') + '>'
+            + '<label class="toggle" for="' + id + '"></label>';
+        } else if (type === 'select') {
+          input = '<select id="' + id + '">' + extra.map(o =>
+            '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'
+          ).join('') + '</select>';
+        } else {
+          input = '<input id="' + id + '" type="' + type + '" value="' + esc(v == null ? '' : v) + '">'
+            + (extra === 'regen' ? ' <div class="btnrow"><button onclick="regenToken()">重新生成</button></div>' : '');
+        }
+        return '<div class="set-row"><label>' + label + '</label>' + input + '</div>';
+      }).join('') + '</div>'
+    ).join('');
+  } catch(e) { toast('读取设置失败：' + e.message, 'err'); }
+}
+function regenToken() {
+  const bytes = new Uint8Array(24); crypto.getRandomValues(bytes);
+  let t = '';
+  btoa(String.fromCharCode.apply(null, bytes)).split('').forEach(ch => {
+    if (/[a-zA-Z0-9]/.test(ch)) t += ch;
+  });
+  document.getElementById(fieldId('panel.token')).value = t.slice(0, 32);
+}
+async function saveSettings() {
+  const btn = document.getElementById('btn-save');
+  const m = document.getElementById('settings-msg');
+  btn.disabled = true; m.textContent = '保存中…'; m.style.color = 'var(--dim)';
+  try {
+    SETTING_FIELDS.forEach(sec => sec.fields.forEach(f => {
+      const path = f[0], type = f[2];
+      const el = document.getElementById(fieldId(path));
+      let v = type === 'checkbox' ? el.checked : el.value.trim();
+      if (LIST_FIELDS.includes(path)) v = v ? v.split(',').map(s => s.trim()).filter(s => s) : [];
+      else if (INT_FIELDS.includes(path)) v = parseInt(v, 10);
+      else if (FLOAT_FIELDS.includes(path)) v = parseFloat(v);
+      cfgSet(curConfig, path, v);
+    }));
+    const r = await api('/api/config', 'POST', {config: curConfig});
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    m.textContent = '已保存，配置即时生效';
+    m.style.color = 'var(--green)';
+    toast('设置已保存', 'ok');
+    if (r.panel_moved) {
+      m.textContent += '，面板地址已变更，3 秒后跳转…';
+      setTimeout(() => { location.href = r.panel_url.split('0.0.0.0').join(location.hostname); }, 3000);
+    }
+    loadStatus();
+  } catch(e) {
+    m.textContent = '保存失败：' + e.message; m.style.color = 'var(--red)';
+    toast('保存失败：' + e.message, 'err');
+  }
+  btn.disabled = false;
+}
+async function loadBlacklist() {
+  try {
+    const r = await api('/api/blacklist');
+    const box = document.getElementById('blacklist');
+    const list = r.blocked || [];
+    if (!list.length) { box.innerHTML = '<div class="empty">黑名单为空</div>'; return; }
+    box.innerHTML = list.map(b =>
+      '<div class="ev"><span class="ev-ico">🚫</span><div style="flex:1"><div>' + esc(b.id) +
+      ' <span class="badge ' + (b.blacklist_reason === 'manual' ? 'bad' : 'warn') + '">' +
+      (b.blacklist_reason === 'manual' ? '手动拉黑' : '临时拉黑') + '</span></div>' +
+      '<div class="t">成功 ' + b.ok + ' 次 / 失败 ' + b.fail + ' 次</div></div>' +
+      (b.blacklist_reason === 'manual' ? '<button onclick="unblockNode2(\\'' + b.id + '\\')">解除</button>' : '') +
+      '</div>'
+    ).join('');
   } catch(e) {}
 }
-loadStatus(); loadServers(); loadLog();
+async function unblockNode2(id) {
+  try { await api('/api/blacklist_remove', 'POST', {id}); toast('已解除拉黑', 'ok'); }
+  catch(e) { toast('操作失败：' + e.message, 'err'); }
+  loadBlacklist(); loadNodes(true);
+}
+
+/* ---------- 日志 ---------- */
+let logLines = [];
+async function loadLog() {
+  try {
+    const r = await api('/api/log?n=200');
+    logLines = r.lines || [];
+    renderLog();
+  } catch(e) {
+    document.getElementById('log').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+function logLevel(line) {
+  const l = line.toUpperCase();
+  if (l.includes('ERROR') || l.includes('失败') || l.includes('FAILED')) return 'error';
+  if (l.includes('WARN')) return 'warn';
+  return 'info';
+}
+function renderLog() {
+  const q = document.getElementById('log-q').value.trim().toLowerCase();
+  const lv = document.getElementById('log-level').value;
+  const box = document.getElementById('log');
+  const list = logLines.filter(line => {
+    if (q && line.toLowerCase().indexOf(q) < 0) return false;
+    if (lv === 'INFO' && logLevel(line) !== 'info') return false;
+    if (lv === 'WARN' && logLevel(line) !== 'warn') return false;
+    if (lv === 'ERROR' && logLevel(line) !== 'error') return false;
+    return true;
+  });
+  if (!list.length) { box.innerHTML = '<div class="empty">没有匹配的日志</div>'; return; }
+  box.innerHTML = list.slice(-150).map(line =>
+    '<div class="log-item ' + logLevel(line) + '">' + esc(line) + '</div>'
+  ).join('');
+  box.scrollTop = box.scrollHeight;
+}
+function exportLog() {
+  const blob = new Blob([logLines.join('\\n')], {type: 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'yu-proxy.log';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/* ---------- 初始化 ---------- */
+initTheme();
+loadStatus();
+tickThroughput();
+loadEvents();
 setInterval(loadStatus, 5000);
-setInterval(loadLog, 10000);
+setInterval(tickThroughput, 5000);
+setInterval(loadEvents, 15000);
 </script>
 </body>
 </html>
@@ -520,6 +933,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["servers"]())
             elif path == "/api/config":
                 self._json(self.hooks["get_config"]())
+            elif path == "/api/blacklist":
+                self._json(self.hooks["blacklist"]())
+            elif path == "/api/events":
+                self._json(self.hooks["events"]())
+            elif path == "/api/throughput":
+                self._json(self.hooks["throughput"]())
             elif path == "/api/log":
                 qs = urllib.parse.parse_qs(parsed.query)
                 try:
@@ -573,6 +992,18 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["disconnect"]())
             elif path == "/api/config":
                 self._json(self.hooks["save_config"](body))
+            elif path == "/api/blacklist_add":
+                self._json(self.hooks["blacklist_add"](body.get("id")))
+            elif path == "/api/blacklist_remove":
+                self._json(self.hooks["blacklist_remove"](body.get("id")))
+            elif path == "/api/pause":
+                self._json(self.hooks["pause"]())
+            elif path == "/api/resume":
+                self._json(self.hooks["resume"]())
+            elif path == "/api/probe":
+                self._json(self.hooks["probe"](body.get("id")))
+            elif path == "/api/rotate_now":
+                self._json(self.hooks["rotate_now"]())
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
         except Exception as e:
