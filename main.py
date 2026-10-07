@@ -379,6 +379,7 @@ class Daemon:
         if vpn_status.get("connected_at"):
             vpn_status["uptime_s"] = \
                 int(time.time() - vpn_status["connected_at"])
+        pstat = self.proxy_ctx.stats.snapshot()
         return {
             "ok": True,
             "version": VERSION,
@@ -386,7 +387,9 @@ class Daemon:
             "proxy": {
                 "listen": f"{self.proxy.bind}:{self.proxy.port}",
                 "auth": self.proxy_ctx.auth is not None,
-                **self.proxy_ctx.stats.snapshot(),
+                # 前端用 up_bytes/down_bytes 命名
+                "up_bytes": pstat["tx"],
+                "down_bytes": pstat["rx"],
             },
             "server_count": len(servers),
             "cache_at": cached_at,
@@ -731,21 +734,26 @@ class Daemon:
                 except Exception as e:
                     self.log(f"[refetch] 刷新失败: {e}")
 
+    def _sample_throughput(self) -> None:
+        """采样一次代理吞吐，算出上下行 bps（供 _throughput_loop 调用）。"""
+        snap = self.proxy_ctx.stats.snapshot()
+        now = time.time()
+        # TrafficStats: tx=上传（发往上行）, rx=下载（从上行来）
+        up, down = snap["tx"], snap["rx"]
+        if self._tp_last is not None:
+            t0, up0, down0 = self._tp_last
+            dt = max(0.1, now - t0)
+            self._throughput.append(
+                (now, (up - up0) * 8 / dt, (down - down0) * 8 / dt))
+        self._tp_last = (now, up, down)
+
     def _throughput_loop(self) -> None:
-        """每 2 秒采样代理吞吐，算出上下行 bps。"""
+        """每 2 秒采样代理吞吐。"""
         while not self._stop_event.wait(2):
             try:
-                snap = self.proxy_ctx.stats.snapshot()
-                now = time.time()
-                up, down = snap["up_bytes"], snap["down_bytes"]
-                if self._tp_last is not None:
-                    t0, up0, down0 = self._tp_last
-                    dt = max(0.1, now - t0)
-                    self._throughput.append(
-                        (now, (up - up0) * 8 / dt, (down - down0) * 8 / dt))
-                self._tp_last = (now, up, down)
-            except Exception:
-                pass
+                self._sample_throughput()
+            except Exception as e:
+                self.log(f"[throughput] 采样异常: {e}")
 
     def run(self) -> None:
         if os.geteuid() != 0:
@@ -852,7 +860,7 @@ def cmd_status(cfg: dict) -> int:
         print(f"  隧道: {vpn['device']} ip={vpn['tun_ip']} "
               f"已运行 {vpn['uptime_s']}s")
     px = st["proxy"]
-    print(f"代理: {px['listen']} 流量 ↓{px['rx']}B ↑{px['tx']}B")
+    print(f"代理: {px['listen']} 流量 ↓{px['down_bytes']}B ↑{px['up_bytes']}B")
     print(f"节点缓存: {st['server_count']} 个")
     return 0
 
