@@ -307,6 +307,7 @@ button{font-family:inherit}
           <button class="btn warn" onclick="clearBlacklist()">🧹 清空黑名单</button>
           <button class="btn danger" onclick="disconnect()">断开</button>
           <button class="btn" onclick="refreshServers()">🔄 刷新节点列表</button>
+          <button class="btn" onclick="restartService()">♻️ 重启服务</button>
           <button class="btn" id="btn-speedtest" onclick="runSpeedTest()">📶 测速（当前连接）</button>
         </div>
         <div class="note" id="speedtest-result" style="display:none;margin-top:8px"></div>
@@ -585,6 +586,14 @@ async function loadPoolStats() {
   } catch(e) {
     document.getElementById('pool-stats').textContent = '公共节点池：连接失败';
   }
+}
+async function restartService() {
+  if (!confirm('确定重启 Yu-proxy 服务吗？约 5 秒后恢复。')) return;
+  try {
+    const r = await api('/api/restart', 'POST', {});
+    toast(r.msg || '正在重启…', 'ok');
+    setTimeout(() => location.reload(), 8000);
+  } catch(e) { toast('重启请求失败：' + e.message, 'err'); }
 }
 async function poolUpload() {
   try {

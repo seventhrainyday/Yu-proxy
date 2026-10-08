@@ -46,7 +46,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.48"
+VERSION = "1.3.49"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -517,6 +517,7 @@ class Daemon:
             "speed_test": self._hook_speed_test,
             "pool_stats": self._hook_pool_stats,
             "pool_upload": self._hook_pool_upload,
+            "restart": self._hook_restart,
             "blacklist_clear": self._hook_blacklist_clear,
             "log_clear": self._hook_log_clear,
             "config_import": self._hook_config_import,
@@ -1141,6 +1142,18 @@ class Daemon:
         # 手动触发上传（忽略节流）
         self._pool_last_upload = 0
         return self._pool_upload_working()
+
+    def _hook_restart(self) -> dict:
+        """重启服务：响应后 2 秒退出进程，systemd 自动拉起。"""
+        def _run():
+            import os
+            time.sleep(2)
+            # 非 0 退出触发 systemd Restart=on-failure
+            os._exit(1)
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+        self.log("[api] 收到重启请求，2 秒后退出")
+        return {"ok": True, "msg": "正在重启，约 5 秒后刷新页面"}
 
     def _all_servers(self) -> list[dict]:
         """VPNGate 缓存节点 + 用户自定义导入节点，统一调度池。"""
