@@ -320,8 +320,10 @@ def filter_servers(
     block: list[str] | None = None,
     min_bandwidth_mbps: float = 0,
     max_ping_ms: float = 0,
+    skip_unavailable: bool = False,
 ) -> list[dict[str, Any]]:
-    """国家白名单/黑名单 + 最低带宽 + 最大延迟过滤。"""
+    """国家白名单/黑名单 + 最低带宽 + 最大延迟过滤。
+    skip_unavailable=True 时跳过探测失败的节点（last_probe 有值但 last_probe_ok 对不上）。"""
     allow_set = {c.upper() for c in (allow or [])}
     block_set = {c.upper() for c in (block or [])}
     out = []
@@ -339,6 +341,10 @@ def filter_servers(
             if max_ping_ms > 0 and 0 < s["ping"] and \
                     s["ping"] > max_ping_ms:
                 continue
+        if skip_unavailable and s.get("last_probe"):
+            # 探测过但没成功过：跳过
+            if not s.get("last_probe_ok") or s["last_probe_ok"] < s["last_probe"] - 1:
+                continue
         out.append(s)
     return out
 
@@ -353,6 +359,7 @@ def pick_best(
     min_bandwidth_mbps: float = 0,
     max_ping_ms: float = 0,
     is_blacklisted: Callable[[str], bool] | None = None,
+    skip_unavailable: bool = False,
 ) -> dict[str, Any] | None:
     """按排序策略挑一个最优节点。
 
@@ -361,7 +368,7 @@ def pick_best(
     """
     exclude = exclude_ids or set()
     pool = filter_servers(servers, allow, block, min_bandwidth_mbps,
-                        max_ping_ms)
+                        max_ping_ms, skip_unavailable)
     candidates = [
         s for s in sort_servers(pool, prefer_countries, tcp_only)
         if s["id"] not in exclude
@@ -380,11 +387,12 @@ def pick_weighted(
     min_bandwidth_mbps: float = 0,
     max_ping_ms: float = 0,
     is_blacklisted: Callable[[str], bool] | None = None,
+    skip_unavailable: bool = False,
 ) -> dict[str, Any] | None:
     """权重随机：分数越高被选中的概率越大（调度策略用）。"""
     exclude = exclude_ids or set()
     pool = filter_servers(servers, allow, block, min_bandwidth_mbps,
-                        max_ping_ms)
+                        max_ping_ms, skip_unavailable)
     candidates = [
         s for s in sort_servers(pool, prefer_countries, tcp_only)
         if s["id"] not in exclude

@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.15"
+VERSION = "1.3.16"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -92,6 +92,7 @@ def default_config() -> dict:
             "countries_block": [],
             "min_bandwidth_mbps": 0,
             "max_ping_ms": 0,
+            "skip_unavailable": True,
         },
         "scheduler": {
             "mode": "failover",
@@ -1042,6 +1043,7 @@ class Daemon:
             min_bandwidth_mbps=fcfg.get("min_bandwidth_mbps", 0),
             max_ping_ms=fcfg.get("max_ping_ms", 0),
             is_blacklisted=lambda sid: self.store.is_blacklisted(sid)[0],
+            skip_unavailable=fcfg.get("skip_unavailable", True),
         )
         if self.cfg["scheduler"].get("mode") == "random":
             return vpngate.pick_weighted(

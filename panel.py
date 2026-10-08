@@ -1012,6 +1012,7 @@ const SETTINGS = {
     ['vpn.connect_retries','连接失败时最多试几个节点','number']],
   'sched-filter': [['filter.countries_allow','国家白名单（只用这些国家的节点，空=不限）','countrypick'],
     ['filter.countries_block','国家黑名单（不用这些国家的节点）','countrypick'],
+    ['filter.skip_unavailable','只连接探测可用的节点（跳过探测失败的）','checkbox'],
     ['filter.min_bandwidth_mbps','最低带宽（Mbps，0=不限）','number'],
     ['filter.max_ping_ms','最大延迟（ms，0=不限）','number'],
     ['probe.threads','探测线程数（1-100，拉取后验证与全量检测共用）','number'],
