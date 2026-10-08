@@ -1,0 +1,46 @@
+#!/bin/sh
+# yu - Yu-proxy 管理命令（类似 AimiliVPN 的 ml）
+# 用法: yu status|restart|start|stop|log|update|version
+
+PROG="Yu-proxy"
+INSTALL_DIR="/opt/Yu-proxy"
+CONFIG="/etc/Yu-proxy/config.json"
+LOG="/var/lib/Yu-proxy/app.log"
+
+case "$1" in
+  status)
+    rc-service $PROG status 2>/dev/null || service $PROG status 2>/dev/null || systemctl status $PROG 2>/dev/null || echo "服务管理器不可用"
+    ;;
+  restart)
+    echo "正在重启 $PROG..."
+    rc-service $PROG restart 2>/dev/null || service $PROG restart 2>/dev/null || systemctl restart $PROG 2>/dev/null || echo "重启失败：找不到服务管理器"
+    ;;
+  start)
+    rc-service $PROG start 2>/dev/null || service $PROG start 2>/dev/null || systemctl start $PROG 2>/dev/null
+    ;;
+  stop)
+    rc-service $PROG stop 2>/dev/null || service $PROG stop 2>/dev/null || systemctl stop $PROG 2>/dev/null
+    ;;
+  log)
+    tail -n ${2:-50} "$LOG" 2>/dev/null || echo "日志文件不存在: $LOG"
+    ;;
+  version)
+    grep -m1 '^VERSION' "$INSTALL_DIR/main.py" 2>/dev/null || echo "未知"
+    ;;
+  update)
+    echo "正在更新 Yu-proxy..."
+    cd "$INSTALL_DIR" 2>/dev/null || cd /tmp
+    URLS="https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/install-remote.sh https://cdn.jsdelivr.net/gh/seventhrainyday/Yu-proxy@main/install-remote.sh"
+    for u in $URLS; do
+      echo "尝试 $u"
+      if wget -qO- --timeout=30 "$u" 2>/dev/null | sh; then
+        echo "更新完成"
+        break
+      fi
+      echo "失败，试下一个"
+    done
+    ;;
+  *)
+    echo "用法: yu {status|restart|start|stop|log [行数]|version|update}"
+    ;;
+esac
