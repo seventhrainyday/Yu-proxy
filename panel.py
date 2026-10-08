@@ -62,6 +62,9 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
 .nav-item:hover{background:var(--hover)}
 .nav-item.active{background:rgba(59,130,246,.14);color:var(--primary);font-weight:600}
 .nav-item .ico{width:20px;text-align:center}
+.countrypick{display:flex;flex-wrap:wrap;gap:6px;max-height:160px;overflow-y:auto;padding:8px;border:1px solid var(--card-border);border-radius:8px}
+.cpick{display:flex;align-items:center;gap:4px;font-size:13px;padding:4px 10px;background:var(--hover);border-radius:20px;cursor:pointer;user-select:none}
+.cpick input{accent-color:var(--primary)}
 .nav-toggle .arrow{margin-left:auto;font-size:11px;color:var(--dim);transition:transform .2s}
 .nav-group.open .nav-toggle .arrow{transform:rotate(180deg)}
 .nav-sub{overflow:hidden;max-height:0;transition:max-height .25s ease}
@@ -323,6 +326,7 @@ button{font-family:inherit}
       <div class="card">
         <div class="filterbar">
           <input id="f-q" placeholder="🔍 搜索 国家 / IP / ID…" oninput="renderNodes()">
+          <select id="f-country" onchange="renderNodes()"><option value="">🌍 全部国家</option></select>
           <select id="f-sort" onchange="renderNodes()">
             <option value="default">默认排序</option>
             <option value="ipq">IP 质量优先</option>
@@ -823,8 +827,19 @@ async function loadNodes(force) {
     const r = await api('/api/servers');
     if (!r.ok) throw new Error(r.error || '加载失败');
     servers = r.servers || [];
+    fillCountryFilter();
     renderNodes();
   } catch(e) { box.innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; }
+}
+function fillCountryFilter() {
+  const sel = document.getElementById('f-country');
+  const cur = sel.value;
+  const seen = {};
+  servers.forEach(s => { if (s.country) seen[s.country] = s.country_zh || s.country; });
+  const codes = Object.keys(seen).sort();
+  sel.innerHTML = '<option value="">🌍 全部国家</option>' +
+    codes.map(c => `<option value="${c}">${esc(seen[c])} (${c})</option>`).join('');
+  if (codes.includes(cur)) sel.value = cur;
 }
 const IQ_META = {
   residential: ['🏠 住宅', 'ok'], mobile: ['📱 移动', ''],
@@ -850,6 +865,8 @@ function renderNodes() {
   const hideBlocked = document.getElementById('f-hide-blocked').checked;
   let list = servers.filter(s => {
     if (hideBlocked && s.blacklisted) return false;
+    const fc = document.getElementById('f-country').value;
+    if (fc && (s.country || '') !== fc) return false;
     if (q && !((s.country_zh || '') + (s.country || '') + s.ip + s.id).toLowerCase().includes(q)) return false;
     return true;
   });
@@ -980,8 +997,8 @@ const SETTINGS = {
     ['watchdog.interval','故障探测间隔（秒）','number'],
     ['watchdog.health_interval','健康检查间隔（秒）','number'],
     ['vpn.connect_retries','连接失败时最多试几个节点','number']],
-  'sched-filter': [['filter.countries_allow','国家白名单（逗号分隔，空=不限）','text'],
-    ['filter.countries_block','国家黑名单（逗号分隔）','text'],
+  'sched-filter': [['filter.countries_allow','国家白名单（只用这些国家的节点，空=不限）','countrypick'],
+    ['filter.countries_block','国家黑名单（不用这些国家的节点）','countrypick'],
     ['filter.min_bandwidth_mbps','最低带宽（Mbps，0=不限）','number'],
     ['filter.max_ping_ms','最大延迟（ms，0=不限）','number'],
     ['probe.threads','探测线程数（1-100，拉取后验证与全量检测共用）','number'],
@@ -1026,7 +1043,7 @@ const SETTINGS = {
     ['notify.events.fail','连接故障时通知','checkbox'],
     ['notify.events.recover','连接恢复时通知','checkbox']],
 };
-const LIST_FIELDS = ['filter.countries_allow','filter.countries_block','proxy.allow_ips','killswitch.allow_hosts'];
+const LIST_FIELDS = ['proxy.allow_ips','killswitch.allow_hosts'];
 const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads',
   'filter.min_bandwidth_mbps','filter.max_ping_ms','scheduler.rotate_interval_min',
   'watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries',
@@ -1053,7 +1070,7 @@ async function openSettingsPage(page) {
     box.innerHTML = SETTINGS[page].map(f => {
       const [path, label, type, extra] = f;
       let v = cfgGet(curConfig, path);
-      if (Array.isArray(v)) v = v.join(',');
+      if (Array.isArray(v) && type !== 'countrypick') v = v.join(',');
       const id = fieldId(path);
       let input;
       if (type === 'checkbox') {
@@ -1061,6 +1078,15 @@ async function openSettingsPage(page) {
       } else if (type === 'select') {
         input = `<select id="${id}">` + extra.map(o =>
           `<option value="${o[0]}"${v === o[0] ? ' selected' : ''}>${o[1]}</option>`).join('') + `</select>`;
+      } else if (type === 'countrypick') {
+        // v 是逗号字符串或数组，统一转数组
+        const picked = Array.isArray(v) ? v : String(v || '').split(',').map(s => s.trim()).filter(s => s);
+        const seen = {};
+        (servers || []).forEach(s => { if (s.country) seen[s.country] = s.country_zh || s.country; });
+        const codes = Object.keys(seen).sort();
+        input = `<div class="countrypick" id="${id}">` + (codes.length ?
+          codes.map(c => `<label class="cpick"><input type="checkbox" value="${c}"${picked.includes(c) ? ' checked' : ''}>${esc(seen[c])}</label>`).join('') :
+          '<span class="note">暂无节点数据，请先到节点列表页加载</span>') + `</div>`;
       } else {
         input = `<input id="${id}" type="${type}" value="${esc(v == null ? '' : v)}">` +
           (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button><div class="fld-hint" id="secret-url-hint"></div>` : '');
@@ -1102,7 +1128,12 @@ async function saveSettingsPage(page) {
       const [path, , type] = f;
       if (path === 'panel.pass2') return; // 确认密码不存配置
       const el = document.getElementById(fieldId(path));
-      let v = type === 'checkbox' ? el.checked : el.value.trim();
+      let v;
+      if (type === 'countrypick') {
+        v = [...el.querySelectorAll('input:checked')].map(i => i.value);
+      } else {
+        v = type === 'checkbox' ? el.checked : el.value.trim();
+      }
       if (LIST_FIELDS.includes(path)) v = v ? v.split(',').map(s => s.trim()).filter(s => s) : [];
       else if (INT_FIELDS.includes(path)) v = parseInt(v, 10);
       else if (FLOAT_FIELDS.includes(path)) v = parseFloat(v);
