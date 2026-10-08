@@ -1108,7 +1108,7 @@ async function openSettingsPage(page) {
         const codes = Object.keys(seen).sort();
         input = `<div class="countrypick" id="${id}">` + (codes.length ?
           codes.map(c => `<label class="cpick"><input type="checkbox" value="${c}"${picked.includes(c) ? ' checked' : ''}>${esc(seen[c])}</label>`).join('') :
-          '<span class="note">暂无节点数据，请先到节点列表页加载</span>') + `</div>`;
+          '<span class="note">暂无节点数据</span> <button class="btn mini" onclick="reloadCountries()">加载国家列表</button>') + `</div>`;
       } else {
         input = `<input id="${id}" type="${type}" value="${esc(v == null ? '' : v)}">` +
           (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button><div class="fld-hint" id="secret-url-hint"></div>` : '');
@@ -1127,6 +1127,14 @@ async function openSettingsPage(page) {
 function retrySettings(page) {
   settingsCache[page] = false;
   openSettingsPage(page);
+}
+async function reloadCountries() {
+  try {
+    const sr = await api('/api/servers');
+    if (sr.ok) servers = sr.servers || [];
+  } catch(e) {}
+  settingsCache['sched-filter'] = false;
+  openSettingsPage('sched-filter');
 }
 function updateSecretHint() {
   const hint = document.getElementById('secret-url-hint');
