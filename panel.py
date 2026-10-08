@@ -307,7 +307,7 @@ button{font-family:inherit}
           <button class="btn warn" onclick="clearBlacklist()">🧹 清空黑名单</button>
           <button class="btn danger" onclick="disconnect()">断开</button>
           <button class="btn" onclick="refreshServers()">🔄 刷新节点列表</button>
-          <button class="btn" id="btn-speedtest" onclick="runSpeedTest()">📶 测速（当前连接）</button>
+          <button class="btn" id="btn-speedtest" onclick="toast('测速功能维护中，稍后回来', 'err')" disabled style="opacity:.5">📶 测速（当前连接）</button>
         </div>
         <div class="note" id="speedtest-result" style="display:none;margin-top:8px"></div>
         <div class="note" id="proxy-info" style="margin-top:12px"></div>
@@ -1387,8 +1387,8 @@ initTheme();
 loadStatus();
 tickThroughput();
 loadEvents();
-setInterval(loadStatus, 2000);
-setInterval(tickThroughput, 2000);
+setInterval(loadStatus, 1000);
+setInterval(tickThroughput, 1000);
 setInterval(loadEvents, 15000);
 window.addEventListener('resize', drawChart);
 </script>
