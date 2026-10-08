@@ -238,6 +238,35 @@ def speed_test_iface(iface: str, timeout: int = 60) -> dict:
             "url": "", "error": last_err}
 
 
+def speed_test_ookla(iface: str, timeout: int = 90) -> dict:
+    """方案1：Ookla speedtest CLI，绑定隧道网卡。返回 {ok, mbps, up_mbps, ping, jitter, error}。"""
+    import subprocess
+    import shutil
+    import json as _json
+    if not shutil.which("speedtest"):
+        return {"ok": False, "error": "未安装 speedtest CLI，请执行: apk add speedtest-cli 或从 speedtest.net 下载"}
+    try:
+        cmd = ["speedtest", f"--interface={iface}", "--json", "--timeout", str(timeout)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 15)
+        if r.returncode != 0:
+            return {"ok": False, "error": (r.stderr.strip() or r.stdout.strip() or f"退出码 {r.returncode}")[:200]}
+        d = _json.loads(r.stdout)
+        dl = d.get("download", {}).get("bandwidth", 0)  # bytes/sec
+        ul = d.get("upload", {}).get("bandwidth", 0)
+        ping = d.get("ping", {}).get("latency", 0)
+        jitter = d.get("ping", {}).get("jitter", 0)
+        return {"ok": True,
+                "mbps": round(dl * 8 / 1_000_000, 1),
+                "up_mbps": round(ul * 8 / 1_000_000, 1),
+                "ping": round(ping, 1),
+                "jitter": round(jitter, 1),
+                "error": ""}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "测速超时"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 class HealthChecker:
     """对当前隧道做多层健康检查。"""
 

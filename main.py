@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
-from health import HealthChecker, speed_test, speed_test_iface
+from health import HealthChecker, speed_test, speed_test_iface, speed_test_ookla
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.41"
+VERSION = "1.3.42"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -967,7 +967,11 @@ class Daemon:
             self._speedtest_state = {"running": True, "result": None}
             def _run():
                 try:
-                    r = speed_test_iface(device, timeout=60)
+                    # 方案1优先：Ookla CLI
+                    r = speed_test_ookla(device, timeout=90)
+                    # 没装 speedtest 时回退到方案2 curl
+                    if not r["ok"] and "未安装" in r.get("error", ""):
+                        r = speed_test_iface(device, timeout=60)
                     self._speedtest_state = {"running": False, "result": r}
                 except Exception as e:
                     self._speedtest_state = {"running": False,
