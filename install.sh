@@ -110,6 +110,11 @@ else
   echo "可手动运行：/usr/bin/python3 /opt/Yu-proxy/main.py daemon -c /etc/Yu-proxy/config.json"
 fi
 
+# 安装 yu 管理命令
+cp "$SRC_DIR/yu" /usr/local/bin/yu
+chmod +x /usr/local/bin/yu
+echo "已安装 yu 命令：yu status|restart|log|update|version"
+
 echo "[5/5] 启动完成，等待服务就绪…"
 sleep 3
 if [ "$INIT" = "systemd" ]; then
