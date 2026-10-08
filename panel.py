@@ -1029,11 +1029,22 @@ async function openSettingsPage(page) {
           `<option value="${o[0]}"${v === o[0] ? ' selected' : ''}>${o[1]}</option>`).join('') + `</select>`;
       } else {
         input = `<input id="${id}" type="${type}" value="${esc(v == null ? '' : v)}">` +
-          (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button>` : '');
+          (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button><div class="fld-hint" id="secret-url-hint"></div>` : '');
       }
       return `<div class="f-row"><label>${label}</label>${input}</div>`;
     }).join('');
+    updateSecretHint();
+    box.querySelector('#' + CSS.escape(fieldId('panel.secret_path'))) ?.addEventListener('input', updateSecretHint);
   } catch(e) { toast('读取设置失败：' + e.message, 'err'); }
+}
+function updateSecretHint() {
+  const hint = document.getElementById('secret-url-hint');
+  if (!hint) return;
+  const el = document.getElementById(fieldId('panel.secret_path'));
+  const sp = el ? el.value.trim().replace(/^[/]+|[/]+$/g, '') : '';
+  hint.innerHTML = sp
+    ? '当前面板地址：<code>' + esc(location.origin + '/' + sp + '/') + '</code>（请收藏）'
+    : '未启用隐藏路径，面板在根路径 /';
 }
 function regenSecret() {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -1041,6 +1052,7 @@ function regenSecret() {
   const arr = new Uint8Array(16); crypto.getRandomValues(arr);
   for (let i = 0; i < 16; i++) s += chars[arr[i] % chars.length];
   document.getElementById(fieldId('panel.secret_path')).value = s;
+  updateSecretHint();
 }
 async function saveSettingsPage(page) {
   const card = document.querySelector(`.settings-form[data-sp="${page}"]`).closest('.card');

@@ -54,10 +54,12 @@ echo "[3/5] 生成配置"
 python3 - "$CONFIG_DIR/config.json" <<'PYEOF2'
 import json, sys
 path = sys.argv[1]
+is_new = False
 try:
     cfg = json.load(open(path))
 except Exception:
     cfg = {}
+    is_new = True  # 全新安装
 cfg.setdefault("data_dir", "/var/lib/Yu-proxy")
 p = cfg.setdefault("panel", {})
 p.setdefault("bind", "0.0.0.0")
@@ -67,9 +69,11 @@ if not str(p.get("user", "")).strip():
 if not str(p.get("pass", "")).strip():
     p["pass"] = "admin"
 p.pop("token", None)  # 旧版 token 字段不再使用
-if "secret_path" not in p:
+# 隐藏路径：只在全新安装时自动生成；升级时不碰（避免更新后地址突变把用户锁在外面），
+# 用户可在面板「安全与风控 → 面板安全」里手动生成并复制地址
+if is_new and "secret_path" not in p:
     import secrets as _s
-    p["secret_path"] = _s.token_urlsafe(12)  # 隐藏路径防扫描
+    p["secret_path"] = _s.token_urlsafe(12)
 cfg.setdefault("proxy", {}).setdefault("port", 52052)
 cfg.setdefault("vpn", {}).setdefault("device", "tun0")
 json.dump(cfg, open(path, "w"), ensure_ascii=False, indent=2)
