@@ -587,7 +587,12 @@ async function runSpeedTest() {
     if (r.running) throw new Error('超时，请重试');
     if (r.mbps) {
       box.className = 'note ok';
-      box.textContent = `测速完成：${r.mbps} Mbps（${r.seconds}秒，${(r.bytes/1048576).toFixed(1)}MB）`;
+      let txt = `测速完成：⬇ ${r.mbps} Mbps`;
+      if (r.up_mbps) txt += `　⬆ ${r.up_mbps} Mbps`;
+      if (r.ping) txt += `　延迟 ${r.ping}ms`;
+      if (r.jitter) txt += `　抖动 ${r.jitter}ms`;
+      if (r.seconds) txt += `（${r.seconds}秒）`;
+      box.textContent = txt;
     } else {
       box.className = 'note err';
       box.textContent = '测速失败：' + (r.error || '未知错误');
