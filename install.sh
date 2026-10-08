@@ -108,7 +108,7 @@ elif [ "$INIT" = "openrc" ]; then
   rc-service Yu-proxy status || true
 fi
 
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 PANEL_PORT="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json'))['panel']['port'])")"
 PROXY_PORT="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json'))['proxy']['port'])")"
 echo ""

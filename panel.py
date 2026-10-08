@@ -196,8 +196,9 @@ button{font-family:inherit}
 /* ===== Toast ===== */
 #toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(80px);
   background:rgba(20,22,36,.92);color:#fff;padding:12px 22px;border-radius:14px;font-size:14px;
-  z-index:99;transition:transform .25s;box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw}
-#toast.show{transform:translateX(-50%) translateY(0)}
+  z-index:99;transition:transform .25s,opacity .25s;box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw;
+  opacity:0;visibility:hidden;pointer-events:none}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1;visibility:visible}
 @media (max-width:600px){#toast{bottom:90px}}
 #toast.err{background:rgba(180,30,30,.94)}
 #toast.ok{background:rgba(20,120,60,.94)}
@@ -301,8 +302,6 @@ button{font-family:inherit}
         <div class="btnrow">
           <button class="btn primary" id="btn-best" onclick="connectBest()">⚡ 一键连接最优</button>
           <button class="btn" onclick="rotateNow()">🔀 手动切换节点</button>
-          <button class="btn" onclick="runSpeedTest()">🚀 测速</button>
-          <span class="note" id="speed-result"></span>
           <button class="btn" onclick="forceReconnect()">🔌 强制重连隧道</button>
           <button class="btn" onclick="togglePause()" id="btn-pause">⏸ 暂停自动切换</button>
           <button class="btn warn" onclick="clearBlacklist()">🧹 清空黑名单</button>
@@ -567,21 +566,6 @@ document.getElementById('chart-seg').addEventListener('click', e => {
   document.querySelectorAll('#chart-seg button').forEach(x => x.classList.toggle('active', x === b));
   drawChart();
 });
-async function runSpeedTest() {
-  const el = document.getElementById('speed-result');
-  el.textContent = '测速中…（约需 30-60 秒）';
-  try {
-    const r = await api('/api/speed_test', 'POST', {});
-    if (!r.ok) throw new Error(r.error || '测速失败');
-    const s = r.speed;
-    if (s.ok) {
-      el.textContent = `下载速度: ${s.mbps} Mbps`;
-    } else {
-      el.textContent = '测速失败：' + (s.error || '未知错误');
-    }
-  } catch(e) { el.textContent = '测速失败：' + e.message; }
-  loadStatus();
-}
 async function checkExitIP() {
   const hint = document.getElementById('ip-hint');
   if (hint) hint.textContent = '检测中…';
@@ -612,11 +596,6 @@ async function loadStatus() {
     document.getElementById('btn-pause').textContent = s.scheduler.paused ? '▶ 恢复自动切换' : '⏸ 暂停自动切换';
     document.getElementById('st-node').textContent = c && v.country_zh ? v.country_zh + ' ' + (v.server_ip || '') : '-';
     document.getElementById('st-ip').textContent = s.exit_ip || '-';
-    const spEl = document.getElementById('speed-result');
-    if (spEl && s.last_speed && s.last_speed.ok) {
-      const ago = s.last_speed_at ? Math.round(Date.now()/1000 - s.last_speed_at) : 0;
-      spEl.textContent = `下载速度: ${s.last_speed.mbps} Mbps${ago > 0 ? `（${ago}秒前）` : ''}`;
-    }
     const ipHint = document.getElementById('ip-hint');
     if (ipHint) {
       if (!s.exit_ip && s.health && s.health.error) {
@@ -1046,7 +1025,6 @@ const SETTINGS = {
   'sched-policy': [['scheduler.mode','调度模式','select',[['failover','主备模式'],['rotate','定时轮询'],['random','权重随机']]],
     ['scheduler.rotate_interval_min','轮询间隔（分钟）','number'],
     ['scheduler.force_rotation_h','强制换出口 IP（小时，0=关闭）','number'],
-    ['speedtest.auto_interval_min','自动测速间隔（分钟，0=关闭）','number'],
     ['watchdog.enabled','启用故障自动切换','checkbox'],
     ['watchdog.health_check','多层健康检查（TCP + 真实外网探测）','checkbox'],
     ['watchdog.risk_detect','风控检测（出口 IP 遇 403/验证码自动切换）','checkbox'],
@@ -1082,7 +1060,7 @@ const SETTINGS = {
     ['notify.events.recover','连接恢复时通知','checkbox']],
 };
 const LIST_FIELDS = ['proxy.allow_ips','killswitch.allow_hosts'];
-const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads','speedtest.auto_interval_min',
+const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads',
   'filter.min_bandwidth_mbps','filter.max_ping_ms','scheduler.rotate_interval_min',
   'watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries',
   'notify.email.smtp_port'];
