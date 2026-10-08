@@ -430,8 +430,9 @@ button{font-family:inherit}
 </div>
 <div id="toast"></div>
 <script>
+const BASE = "__BASE__";
 async function api(path, method, body) {
-  const url = path;
+  const url = BASE + path;
   const opt = {method: method || 'GET', headers: {}};
   if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const r = await fetch(url, opt);
@@ -581,7 +582,7 @@ async function loadStatus() {
     if (ksBtn) ksBtn.textContent = ks.active ? '关闭 Kill-switch' : '启用 Kill-switch';
     loadExits();
   } catch(e) {
-    if (/401/.test(e.message)) location.href = '/login';
+    if (/401/.test(e.message)) location.href = BASE + '/login';
   }
 }
 async function tickThroughput() {
@@ -707,7 +708,7 @@ async function clearBlacklist() {
   } catch(e) { toast('失败：' + e.message, 'err'); }
   loadNodes(true); loadBlacklist();
 }
-function logout() { location.href = '/logout'; }
+function logout() { location.href = BASE + '/logout'; }
 /* ---------- Kill-switch ---------- */
 async function toggleKillswitch() {
   const el = document.getElementById('st-ks');
@@ -1028,11 +1029,18 @@ async function openSettingsPage(page) {
           `<option value="${o[0]}"${v === o[0] ? ' selected' : ''}>${o[1]}</option>`).join('') + `</select>`;
       } else {
         input = `<input id="${id}" type="${type}" value="${esc(v == null ? '' : v)}">` +
-          (extra === 'regen' ? ` <button class="btn mini" onclick="regenToken()">重新生成</button>` : '');
+          (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button>` : '');
       }
       return `<div class="f-row"><label>${label}</label>${input}</div>`;
     }).join('');
   } catch(e) { toast('读取设置失败：' + e.message, 'err'); }
+}
+function regenSecret() {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let s = '';
+  const arr = new Uint8Array(16); crypto.getRandomValues(arr);
+  for (let i = 0; i < 16; i++) s += chars[arr[i] % chars.length];
+  document.getElementById(fieldId('panel.secret_path')).value = s;
 }
 async function saveSettingsPage(page) {
   const card = document.querySelector(`.settings-form[data-sp="${page}"]`).closest('.card');
@@ -1058,8 +1066,12 @@ async function saveSettingsPage(page) {
     if (!r.ok) throw new Error(r.error || '保存失败');
     if (msg) { msg.textContent = '已保存，配置即时生效'; msg.style.color = 'var(--green)'; }
     toast('设置已保存', 'ok');
+    if (msg && r.panel_url) {
+      const showUrl = r.panel_url.split('0.0.0.0').join(location.hostname);
+      msg.textContent += '，面板地址：' + showUrl;
+    }
     if (r.panel_moved) {
-      if (msg) msg.textContent += '，面板地址已变更，3 秒后跳转…';
+      if (msg) msg.textContent += '，3 秒后跳转…';
       setTimeout(() => { location.href = r.panel_url.split('0.0.0.0').join(location.hostname); }, 3000);
     }
     loadStatus();
@@ -1095,7 +1107,7 @@ async function loadBlacklist() {
 
 /* ---------- 配置导入导出 ---------- */
 function exportConfig() {
-  window.open('/api/config_export', '_blank');
+  window.open(BASE + '/api/config_export', '_blank');
 }
 async function importConfig(input) {
   const f = input.files[0]; if (!f) return;
@@ -1236,7 +1248,7 @@ button:active{transform:translateY(1px)}
 <div class="box">
   <h1>\U0001f310 Yu-proxy</h1>
   <div class="err" id="err"></div>
-  <form method="post" action="/login">
+  <form method="post" action="__BASE__/login">
     <input name="username" placeholder="用户名" autocomplete="username" required>
     <input name="password" type="password" placeholder="密码"
            autocomplete="current-password" required>
@@ -1303,10 +1315,28 @@ class PanelHandler(BaseHTTPRequestHandler):
             return {}
 
     def _redirect(self, location: str) -> None:
+        # 相对路径自动补隐藏路径前缀
+        if location.startswith("/") and self.panel_server.base_path:
+            location = self.panel_server.base_path + location
         self.send_response(302)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _strip_secret(self, path: str) -> str | None:
+        """剥离隐藏路径前缀。未启用时直接返回；启用但不匹配时返回 None（404）。"""
+        base = self.panel_server.base_path
+        if not base:
+            return path
+        if path == base or path.startswith(base + "/"):
+            stripped = path[len(base):] or "/"
+            return stripped
+        return None
+
+    def _page(self, html: str) -> bytes:
+        """注入 BASE 路径后返回页面。"""
+        base = self.panel_server.base_path
+        return html.replace("__BASE__", base).encode("utf-8")
 
     def _read_form(self) -> dict:
         try:
@@ -1326,9 +1356,14 @@ class PanelHandler(BaseHTTPRequestHandler):
         path = parsed.path
         ref = self.panel_server
 
+        path = self._strip_secret(path)
+        if path is None:
+            self._send(404, b"Not Found", "text/plain")
+            return
+
         # 登录 / 登出页无需鉴权
         if path == "/login":
-            self._send(200, LOGIN_HTML.encode("utf-8"), "text/html")
+            self._send(200, self._page(LOGIN_HTML), "text/html")
             return
         if path == "/logout":
             ref.drop_session(self._session_id())
@@ -1344,7 +1379,7 @@ class PanelHandler(BaseHTTPRequestHandler):
 
         try:
             if path == "/":
-                self._send(200, PAGE_HTML.encode("utf-8"), "text/html")
+                self._send(200, self._page(PAGE_HTML), "text/html")
             elif path == "/api/status":
                 self._json(self.hooks["status"]())
             elif path == "/api/servers":
@@ -1389,6 +1424,11 @@ class PanelHandler(BaseHTTPRequestHandler):
         path = parsed.path
         ref = self.panel_server
 
+        path = self._strip_secret(path)
+        if path is None:
+            self._send(404, b"Not Found", "text/plain")
+            return
+
         # 登录提交（表单）
         if path == "/login":
             form = self._read_form()
@@ -1402,7 +1442,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                     "Set-Cookie",
                     f"{PanelServer.SESSION_COOKIE}={sid}; HttpOnly; "
                     f"Path=/; Max-Age={PanelServer.SESSION_TTL}")
-                self.send_header("Location", "/")
+                loc = ref.base_path + "/" if ref.base_path else "/"
+                self.send_header("Location", loc)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             else:
@@ -1481,13 +1522,15 @@ class PanelServer:
 
     def __init__(self, bind: str, port: int,
                  hooks: dict[str, Callable], log=print,
-                 panel_user: str = "admin", panel_pass: str = "admin"):
+                 panel_user: str = "admin", panel_pass: str = "admin",
+                 secret_path: str = ""):
         self.bind = bind
         self.port = port
         self.hooks = hooks
         self.log = log
         self.panel_user = panel_user
         self.panel_pass = panel_pass
+        self.secret_path = secret_path.strip("/ ")
         self._sessions: dict[str, float] = {}
         self._sess_lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
@@ -1519,10 +1562,17 @@ class PanelServer:
             with self._sess_lock:
                 self._sessions.pop(sid, None)
 
-    def apply_auth(self, user: str, password: str) -> None:
+    def apply_auth(self, user: str, password: str,
+                     secret_path: str = "") -> None:
         """热更新鉴权配置，无需重启面板。"""
         self.panel_user = user
         self.panel_pass = password
+        self.secret_path = secret_path.strip("/ ")
+
+    @property
+    def base_path(self) -> str:
+        """面板根路径：启用隐藏路径时为 /xxx，否则为空。"""
+        return "/" + self.secret_path if self.secret_path else ""
 
     def start(self) -> None:
         if self._httpd is not None:
@@ -1541,8 +1591,8 @@ class PanelServer:
         self._thread = threading.Thread(target=httpd.serve_forever,
                                         daemon=True, name="panel")
         self._thread.start()
-        self.log(f"[panel] 管理面板 http://{self.bind}:{self.port}/ "
-                 f"(账号 {self.panel_user})")
+        self.log(f"[panel] 管理面板 http://{self.bind}:{self.port}"
+                 f"{self.base_path}/ (账号 {self.panel_user})")
 
     def restart(self, bind: str, port: int) -> None:
         """换监听地址/端口（设置页改面板端口时用）。"""

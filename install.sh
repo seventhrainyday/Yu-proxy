@@ -67,6 +67,9 @@ if not str(p.get("user", "")).strip():
 if not str(p.get("pass", "")).strip():
     p["pass"] = "admin"
 p.pop("token", None)  # 旧版 token 字段不再使用
+if "secret_path" not in p:
+    import secrets as _s
+    p["secret_path"] = _s.token_urlsafe(12)  # 隐藏路径防扫描
 cfg.setdefault("proxy", {}).setdefault("port", 52052)
 cfg.setdefault("vpn", {}).setdefault("device", "tun0")
 json.dump(cfg, open(path, "w"), ensure_ascii=False, indent=2)
@@ -108,8 +111,10 @@ echo ""
 echo "==================================================="
 echo " 安装成功！"
 echo ""
-echo " 管理面板：http://${IP:-<服务器IP>}:${PANEL_PORT}/"
+SECRET="$(python3 -c "import json;print(json.load(open('$CONFIG_DIR/config.json')).get('panel',{}).get('secret_path',''))")"
+echo " 管理面板：http://${IP:-<服务器IP>}:${PANEL_PORT}/${SECRET}"
 echo " 默认账号：admin / 默认密码：admin（首次登录后请修改）"
+echo " （隐藏路径防扫描，请收藏好上面这个地址）"
 echo " 代理地址：${IP:-<服务器IP>}:${PROXY_PORT}"
 echo "   （HTTP / HTTPS / SOCKS5 二合一，账号密码默认空）"
 echo ""

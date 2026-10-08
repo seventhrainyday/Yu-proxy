@@ -8,14 +8,47 @@
 from __future__ import annotations
 
 import socket
+import re
 import time
 import urllib.request
 
 # 真实连通性探测站：一个要 204、一个回显出口 IP
 PROBE_URLS = [
     "http://cdn.cloudflare.com/cdn-cgi/trace",
+    "http://api.ipify.org",
+    "http://icanhazip.com",
+    "http://ifconfig.me/ip",
     "https://www.gstatic.com/generate_204",
 ]
+
+# 纯文本 IP 校验（v4/v6）
+_IP_RE = re.compile(
+    r"^(?:\d{1,3}\.){3}\d{1,3}$|"
+    r"^[0-9a-fA-F:]+$"
+)
+
+
+def _extract_ip(body: str) -> str:
+    """从探测站响应里提取出口 IP：支持 ip= 行和纯文本 IP。"""
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("ip="):
+            cand = line[3:].strip()
+            if _IP_RE.match(cand):
+                return cand
+    # 纯文本 IP（如 api.ipify.org 直接返回 IP）
+    text = body.strip()
+    if _IP_RE.match(text) and len(text) < 64:
+        # 排除 IPv6 过长误判，简单校验 v4 每段 ≤255
+        if "." in text:
+            try:
+                if all(0 <= int(p) <= 255 for p in text.split(".")):
+                    return text
+            except ValueError:
+                pass
+        else:
+            return text
+    return ""
 
 
 def tcp_ping(host: str, port: int = 443, timeout: float = 5,
@@ -81,11 +114,7 @@ def http_probe(proxy: str, urls: list[str] | None = None,
             with resp:
                 body = resp.read(4096).decode("utf-8", errors="replace")
             ms = (time.monotonic() - t0) * 1000
-            exit_ip = ""
-            for line in body.splitlines():
-                if line.startswith("ip="):
-                    exit_ip = line[3:].strip()
-                    break
+            exit_ip = _extract_ip(body)
             # 注：generate_204 这类探测站不返回 IP，exit_ip 为空时
             # 前端显示 "-"，不影响连通性判定
             risk = False

@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.7"
+VERSION = "1.3.8"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -53,7 +53,7 @@ def default_config() -> dict:
     return {
         "data_dir": "/var/lib/Yu-proxy",
         "panel": {"bind": "0.0.0.0", "port": 52051,
-                  "user": "admin", "pass": "admin"},
+                  "user": "admin", "pass": "admin", "secret_path": ""},
         "proxy": {
             "bind": "0.0.0.0", "port": 52052,
             "user": "", "pass": "",
@@ -171,6 +171,9 @@ def validate_config(cfg: dict) -> str | None:
             return "panel.user 不能为空"
         if not str(cfg["panel"].get("pass", "")).strip():
             return "panel.pass 不能为空"
+        sp = str(cfg["panel"].get("secret_path", "")).strip()
+        if sp and not re.match(r"^[A-Za-z0-9_-]{4,64}$", sp):
+            return "panel.secret_path 只能含字母数字/_/-，4-64 位"
         if not str(cfg["vpn"].get("device", "")).strip():
             return "vpn.device 不能为空"
         wd = cfg["watchdog"]
@@ -298,7 +301,8 @@ class Daemon:
             panel_cfg["bind"], panel_cfg["port"],
             self._hooks(), log=self.log,
             panel_user=panel_cfg.get("user", "admin"),
-            panel_pass=panel_cfg.get("pass", "admin"))
+            panel_pass=panel_cfg.get("pass", "admin"),
+            secret_path=panel_cfg.get("secret_path", ""))
 
         self._paused = False
         self.watchdog: Watchdog | None = None
@@ -1057,6 +1061,10 @@ class Daemon:
                                     cand["id"])
                         self.last_error = None
                         self.last_error_at = None
+                        # 连接成功后立即做一次健康检查，尽快拿到出口 IP
+                        threading.Thread(
+                            target=self._health_check, daemon=True,
+                            name="health-init").start()
                         return
                     except Exception as e:
                         last_err = _summarize_error(e)
@@ -1159,7 +1167,8 @@ class Daemon:
         # 面板鉴权：热更新
         p_new = new_cfg["panel"]
         self.panel.apply_auth(p_new.get("user", "admin"),
-                              p_new.get("pass", "admin"))
+                              p_new.get("pass", "admin"),
+                              p_new.get("secret_path", ""))
 
         # 面板地址/端口变化：重启面板
         p_old = old["panel"]
@@ -1196,7 +1205,8 @@ class Daemon:
         return {
             "ok": True,
             "panel_moved": panel_moved,
-            "panel_url": f"http://{p_new['bind']}:{p_new['port']}/",
+            "panel_url": (f"http://{p_new['bind']}:{p_new['port']}/"
+                          f"{p_new.get('secret_path', '').strip('/ ')}").rstrip("/") + "/",
         }
 
     # ----- 运行 -----

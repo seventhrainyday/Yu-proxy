@@ -5,7 +5,8 @@
     "bind": "0.0.0.0",
     "port": 52051,
     "user": "admin",
-    "pass": "admin"
+    "pass": "admin",
+    "secret_path": ""
   },
   "proxy": {
     "allow_direct_fallback": false,
