@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.35"
+VERSION = "1.3.36"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -953,30 +953,30 @@ class Daemon:
 
     def _hook_speed_test(self) -> dict:
         """手动测速：后台线程跑，前端轮询结果。"""
-        if not self.controller.is_connected():
-            return {"ok": False, "error": "VPN 未连接"}
-        # 如果正在测，返回进度
-        st = getattr(self, "_speedtest_state", None)
-        if st and st.get("running"):
+        try:
+            if not self.controller.is_connected():
+                return {"ok": False, "error": "VPN 未连接"}
+            st = getattr(self, "_speedtest_state", None)
+            if st and st.get("running"):
+                return {"ok": True, "running": True}
+            if st and st.get("result"):
+                r = st["result"]
+                self._speedtest_state = {}
+                return {"ok": True, "running": False, **r}
+            self._speedtest_state = {"running": True, "result": None}
+            def _run():
+                try:
+                    proxy_url, auth = self._proxy_addr()
+                    r = speed_test(proxy_url, auth=auth)
+                    self._speedtest_state = {"running": False, "result": r}
+                except Exception as e:
+                    self._speedtest_state = {"running": False,
+                        "result": {"ok": False, "error": str(e)[:200]}}
+            import threading
+            threading.Thread(target=_run, daemon=True).start()
             return {"ok": True, "running": True}
-        # 取上次结果
-        if st and st.get("result"):
-            r = st["result"]
-            self._speedtest_state = {}
-            return {"ok": True, "running": False, **r}
-        # 启动后台线程
-        self._speedtest_state = {"running": True, "result": None}
-        def _run():
-            try:
-                proxy_url, auth = self._proxy_addr()
-                r = speed_test(proxy_url, auth=auth)
-                self._speedtest_state = {"running": False, "result": r}
-            except Exception as e:
-                self._speedtest_state = {"running": False,
-                    "result": {"ok": False, "error": str(e)[:200]}}
-        import threading
-        threading.Thread(target=_run, daemon=True).start()
-        return {"ok": True, "running": True}
+        except Exception as e:
+            return {"ok": False, "error": f"启动失败: {e}"}
 
     def _hook_health_check(self) -> dict:
         """手动触发健康检查（出口 IP 检测）。"""
