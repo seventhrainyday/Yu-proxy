@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.19"
+VERSION = "1.3.20"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -910,6 +910,7 @@ class Daemon:
     UPDATE_URL = UPDATE_URLS[0]
 
     # 版本检查的多源 URL（GitHub 直连失败时试镜像）
+    # 加时间戳参数破坏 CDN 缓存，避免刚推送就查到旧版本
     VERSION_URLS = [
         "https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/main.py",
         "https://cdn.jsdelivr.net/gh/seventhrainyday/Yu-proxy@main/main.py",
@@ -918,10 +919,13 @@ class Daemon:
     def _hook_update_check(self) -> dict:
         """检查是否有新版本（多源重试）。"""
         last_err = ""
-        for url in self.VERSION_URLS:
+        ts = int(time.time())
+        for base in self.VERSION_URLS:
+            url = f"{base}?t={ts}"
             try:
                 req = urllib.request.Request(
-                    url, headers={"User-Agent": "Yu-proxy/1.0"})
+                    url, headers={"User-Agent": "Yu-proxy/1.0",
+                                  "Cache-Control": "no-cache"})
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     head = resp.read(4096).decode("utf-8", errors="replace")
                 mm = re.search(r'VERSION\s*=\s*"([^"]+)"', head)
