@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.29"
+VERSION = "1.3.30"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -882,11 +882,29 @@ class Daemon:
     ]
 
     def _hook_update_check(self) -> dict:
-        """检查是否有新版本（多源重试）。"""
+        """检查是否有新版本（走 GitHub API 拿最新 commit SHA，再用 SHA 拼 raw URL，避免 CDN 缓存）。"""
         last_err = ""
+        # 1. 先拿最新 commit SHA
+        sha = ""
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/seventhrainyday/Yu-proxy/commits/main",
+                headers={"User-Agent": "Yu-proxy/1.0", "Accept": "application/vnd.github.v3+json"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read(65536).decode("utf-8", errors="replace"))
+                sha = data.get("sha", "")
+        except Exception as e:
+            last_err = f"GitHub API 失败: {e}"
+        # 2. 用 SHA 拼不可变的 raw URL
+        urls = []
+        if sha:
+            urls.append(f"https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/{sha}/main.py")
+            urls.append(f"https://cdn.jsdelivr.net/gh/seventhrainyday/Yu-proxy@{sha}/main.py")
+        # 3. 回退到原来的 URL（带时间戳）
         ts = int(time.time())
         for base in self.VERSION_URLS:
-            url = f"{base}?t={ts}"
+            urls.append(f"{base}?t={ts}")
+        for url in urls:
             try:
                 req = urllib.request.Request(
                     url, headers={"User-Agent": "Yu-proxy/1.0",
