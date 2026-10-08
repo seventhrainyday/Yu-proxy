@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.12"
+VERSION = "1.3.13"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -866,27 +866,40 @@ class Daemon:
 
     # ---------- 一键更新 ----------
 
-    UPDATE_URL = ("https://raw.githubusercontent.com/seventhrainyday/"
-                  "Yu-proxy/main/install-remote.sh")
+    UPDATE_URLS = [
+        "https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/install-remote.sh",
+        "https://cdn.jsdelivr.net/gh/seventhrainyday/Yu-proxy@main/install-remote.sh",
+    ]
+    # 兼容旧名
+    UPDATE_URL = UPDATE_URLS[0]
+
+    # 版本检查的多源 URL（GitHub 直连失败时试镜像）
+    VERSION_URLS = [
+        "https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/main.py",
+        "https://cdn.jsdelivr.net/gh/seventhrainyday/Yu-proxy@main/main.py",
+    ]
 
     def _hook_update_check(self) -> dict:
-        """检查 GitHub 是否有新版本。"""
-        try:
-            req = urllib.request.Request(
-                "https://raw.githubusercontent.com/seventhrainyday/"
-                "Yu-proxy/main/main.py",
-                headers={"User-Agent": "Yu-proxy/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                head = resp.read(4096).decode("utf-8", errors="replace")
-            m = re.search(r'VERSION\s*=\s*"([^"]+)"', head)
-            latest = m.group(1) if m else ""
-            if not latest:
-                return {"ok": False, "error": "无法解析远端版本号"}
-            return {"ok": True, "current": VERSION, "latest": latest,
-                    "has_update": latest != VERSION}
-        except Exception as e:
-            return {"ok": False,
-                    "error": f"检查失败: {str(e).splitlines()[0][:150]}"}
+        """检查是否有新版本（多源重试）。"""
+        last_err = ""
+        for url in self.VERSION_URLS:
+            try:
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "Yu-proxy/1.0"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    head = resp.read(4096).decode("utf-8", errors="replace")
+                mm = re.search(r'VERSION\s*=\s*"([^"]+)"', head)
+                latest = mm.group(1) if mm else ""
+                if not latest:
+                    last_err = "无法解析远端版本号"
+                    continue
+                return {"ok": True, "current": VERSION, "latest": latest,
+                        "has_update": latest != VERSION}
+            except Exception as e:
+                last_err = str(e).splitlines()[0][:200]
+                continue
+        return {"ok": False,
+                "error": f"无法连接更新源: {last_err}"}
 
     def _hook_update(self) -> dict:
         """一键更新：后台脱离进程重跑一键安装脚本，完成后服务自动重启。"""
@@ -895,9 +908,13 @@ class Daemon:
             # 等 API 响应返回后再开始，避免连接被提前掐断
             time.sleep(2)
             try:
+                urls = " ".join(self.UPDATE_URLS)
                 subprocess.Popen(
                     ["bash", "-c",
-                     f"sleep 1; bash <(curl -sSL {self.UPDATE_URL})"
+                     f"sleep 1; for u in {urls}; do "
+                     f"echo \"[update] 尝试 $u\"; "
+                     f"bash <(curl -sSL --max-time 60 $u) && break; "
+                     f"echo \"[update] $u 失败，试下一个\"; done"
                      f" >>/var/lib/Yu-proxy/update.log 2>&1"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
