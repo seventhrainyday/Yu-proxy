@@ -277,6 +277,7 @@ class Watchdog(threading.Thread):
 
     def __init__(self, controller: VPNController,
                  pick_server,  # (exclude:set) -> dict | None
+                 want_connected: Callable[[], bool] | None = None,
                  interval: float = 30.0,
                  fail_threshold: int = 3,
                  max_retries: int = 5,
@@ -289,6 +290,7 @@ class Watchdog(threading.Thread):
         super().__init__(daemon=True, name="vpn-watchdog")
         self.controller = controller
         self.pick_server = pick_server
+        self.want_connected = want_connected or (lambda: True)
         self.interval = interval
         self.fail_threshold = fail_threshold
         self.max_retries = max_retries
@@ -326,6 +328,9 @@ class Watchdog(threading.Thread):
             return
         if not self.controller.is_connected():
             self._fails = 0
+            # 未连接且用户期望连接时，自动重连（手动断开的不打扰）
+            if self.want_connected():
+                self._switch("未连接，尝试自动重连")
             return
 
         # 定时轮换 / 强制换 IP（不看健康，直接换）

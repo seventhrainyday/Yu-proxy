@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.9"
+VERSION = "1.3.10"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -305,6 +305,7 @@ class Daemon:
             secret_path=panel_cfg.get("secret_path", ""))
 
         self._paused = False
+        self._want_connected = bool(self.cfg["vpn"].get("autoconnect", True))
         self.watchdog: Watchdog | None = None
         self._build_watchdog()
 
@@ -373,6 +374,7 @@ class Daemon:
             self.watchdog = Watchdog(
                 self.controller,
                 pick_server=self._pick_server,
+                want_connected=lambda: self._want_connected,
                 interval=wd_cfg.get("interval", 30),
                 fail_threshold=wd_cfg.get("fail_threshold", 3),
                 max_retries=wd_cfg.get("max_retries", 5),
@@ -1085,6 +1087,7 @@ class Daemon:
         return {"ok": True, "msg": f"正在连接 {name}…"}
 
     def _hook_connect(self, server_id: str | None) -> dict:
+        self._want_connected = True
         if not server_id:
             return {"ok": False, "error": "缺少节点 id"}
         server = self._find_server(server_id)
@@ -1094,6 +1097,7 @@ class Daemon:
         return self._async_connect(server, failover=False)
 
     def _hook_connect_best(self) -> dict:
+        self._want_connected = True
         server = self._pick_server(
             exclude={self.controller.current_server_id()}
             if self.controller.current_server_id() else set())
@@ -1104,6 +1108,7 @@ class Daemon:
 
     def _hook_disconnect(self) -> dict:
         sid = self.controller.current_server_id()
+        self._want_connected = False
         self.controller.stop()
         self._event("disconnect", f"手动断开 {sid or ''}", sid)
         return {"ok": True}
