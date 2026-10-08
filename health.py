@@ -91,12 +91,9 @@ def http_probe(proxy: str, urls: list[str] | None = None,
     调用方可据此判定该出口 IP 已被风控、触发切换。
     """
     urls = urls or PROBE_URLS
+    proxy = _proxy_with_auth(proxy, auth)
     handlers = [urllib.request.ProxyHandler(
         {"http": proxy, "https": proxy})]
-    if auth:
-        pm = urllib.request.ProxyBasicAuthHandler()
-        pm.add_password(None, proxy, auth[0], auth[1])
-        handlers.append(pm)
     opener = urllib.request.build_opener(*handlers)
     last_err = ""
     for url in urls:
@@ -144,15 +141,24 @@ SPEEDTEST_URLS = [
 ]
 
 
+def _proxy_with_auth(proxy: str, auth: tuple | None) -> str:
+    """把代理账号密码嵌进 URL（urllib 的 ProxyBasicAuthHandler 对自研代理的 CONNECT 支持不佳）。"""
+    if not auth:
+        return proxy
+    from urllib.parse import urlsplit, urlunsplit, quote
+    p = urlsplit(proxy)
+    netloc = f"{quote(auth[0], safe='')}:{quote(auth[1], safe='')}@{p.hostname}"
+    if p.port:
+        netloc += f":{p.port}"
+    return urlunsplit((p.scheme, netloc, "", "", ""))
+
+
 def speed_test(proxy: str, auth: tuple | None = None,
                timeout: float = 60) -> dict:
     """经代理下载测速。返回 {ok, mbps, bytes, seconds, url, error}。"""
+    proxy = _proxy_with_auth(proxy, auth)
     handlers = [urllib.request.ProxyHandler(
         {"http": proxy, "https": proxy})]
-    if auth:
-        pm = urllib.request.ProxyBasicAuthHandler()
-        pm.add_password(None, proxy, auth[0], auth[1])
-        handlers.append(pm)
     opener = urllib.request.build_opener(*handlers)
     last_err = ""
     for url in SPEEDTEST_URLS:
