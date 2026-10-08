@@ -115,8 +115,6 @@ def http_probe(proxy: str, urls: list[str] | None = None,
                 body = resp.read(4096).decode("utf-8", errors="replace")
             ms = (time.monotonic() - t0) * 1000
             exit_ip = _extract_ip(body)
-            # 注：generate_204 这类探测站不返回 IP，exit_ip 为空时
-            # 前端显示 "-"，不影响连通性判定
             risk = False
             if risk_detect:
                 low = body.lower()
@@ -125,6 +123,10 @@ def http_probe(proxy: str, urls: list[str] | None = None,
             if status == 403 and not risk_detect:
                 # 不开风控检测时，403 也算探测失败
                 last_err = f"HTTP 403（{url}）"
+                continue
+            if not exit_ip:
+                # HTTP 通了但没拿到 IP（如 generate_204），继续试下一个源
+                last_err = f"{url} 未返回 IP"
                 continue
             return {"ok": True, "ms": round(ms, 1),
                     "exit_ip": exit_ip, "url": url, "error": "",

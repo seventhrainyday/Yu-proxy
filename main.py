@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.10"
+VERSION = "1.3.11"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -505,6 +505,7 @@ class Daemon:
             "metrics": self._hook_metrics,
             "update_check": self._hook_update_check,
             "update": self._hook_update,
+            "health_check": self._hook_health_check,
             "blacklist_clear": self._hook_blacklist_clear,
             "log_clear": self._hook_log_clear,
             "config_import": self._hook_config_import,
@@ -908,6 +909,13 @@ class Daemon:
         self._event("update", "开始一键更新，服务将自动重启", None)
         self.log("[update] 一键更新已启动")
         return {"ok": True, "msg": "更新已开始，约 30 秒后刷新页面"}
+
+    def _hook_health_check(self) -> dict:
+        """手动触发健康检查（出口 IP 检测）。"""
+        if not self.controller.is_connected():
+            return {"ok": False, "error": "VPN 未连接"}
+        r = self._health_check()
+        return {"ok": True, "health": r, "exit_ip": self._exit_ip}
 
     # ---------- 黑名单 / 日志 / 配置 ----------
 

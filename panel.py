@@ -62,8 +62,7 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
 .nav-item:hover{background:var(--hover)}
 .nav-item.active{background:rgba(59,130,246,.14);color:var(--primary);font-weight:600}
 .nav-item .ico{width:20px;text-align:center}
-.nav-toggle{justify-content:space-between}
-.nav-toggle .arrow{font-size:11px;color:var(--dim);transition:transform .2s}
+.nav-toggle .arrow{margin-left:auto;font-size:11px;color:var(--dim);transition:transform .2s}
 .nav-group.open .nav-toggle .arrow{transform:rotate(180deg)}
 .nav-sub{overflow:hidden;max-height:0;transition:max-height .25s ease}
 .nav-group.open .nav-sub{max-height:220px}
@@ -250,7 +249,7 @@ button{font-family:inherit}
 </aside>
 <div id="main">
   <header id="topbar">
-    <button id="menu-btn" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+    <button id="menu-btn">☰</button>
     <h1 id="page-title">仪表盘</h1>
     <div class="top-actions">
       <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="切换主题">🌙</button>
@@ -271,7 +270,7 @@ button{font-family:inherit}
         </div>
         <div class="stat-grid">
           <div class="stat"><div class="stat-label">出口节点</div><div class="stat-val" id="st-node">-</div></div>
-          <div class="stat"><div class="stat-label">出口 IP</div><div class="stat-val" id="st-ip">-</div></div>
+          <div class="stat"><div class="stat-label">出口 IP <a href="javascript:void(0)" onclick="checkExitIP()" title="手动检测" style="font-size:12px">🔄</a></div><div class="stat-val" id="st-ip">-</div><div class="fld-hint" id="ip-hint"></div></div>
           <div class="stat"><div class="stat-label">实时延迟</div><div class="stat-val big" id="st-ping">-</div></div>
           <div class="stat"><div class="stat-label">在线时长</div><div class="stat-val" id="st-uptime">-</div></div>
           <div class="stat"><div class="stat-label">⬇ 下行</div><div class="stat-val" id="st-down">-</div></div>
@@ -431,6 +430,18 @@ button{font-family:inherit}
 <div id="toast"></div>
 <script>
 const BASE = "__BASE__";
+document.getElementById('menu-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  document.getElementById('sidebar').classList.toggle('open');
+});
+// 点侧边栏外部自动收起（移动端）
+document.addEventListener('click', e => {
+  const sb = document.getElementById('sidebar');
+  if (sb.classList.contains('open') && !sb.contains(e.target) &&
+      e.target.id !== 'menu-btn' && !document.getElementById('menu-btn').contains(e.target)) {
+    sb.classList.remove('open');
+  }
+});
 async function api(path, method, body) {
   const url = BASE + path;
   const opt = {method: method || 'GET', headers: {}};
@@ -541,6 +552,21 @@ document.getElementById('chart-seg').addEventListener('click', e => {
   document.querySelectorAll('#chart-seg button').forEach(x => x.classList.toggle('active', x === b));
   drawChart();
 });
+async function checkExitIP() {
+  const hint = document.getElementById('ip-hint');
+  if (hint) hint.textContent = '检测中…';
+  try {
+    const r = await api('/api/health_check', 'POST', {});
+    if (r.ok && r.exit_ip) {
+      document.getElementById('st-ip').textContent = r.exit_ip;
+      if (hint) hint.textContent = '';
+    } else {
+      const err = (r.health && r.health.error) || r.error || '未能获取出口 IP';
+      if (hint) hint.textContent = '检测失败：' + err;
+    }
+  } catch(e) { if (hint) hint.textContent = '检测失败：' + e.message; }
+  loadStatus();
+}
 async function loadStatus() {
   try {
     const s = await api('/api/status');
@@ -556,6 +582,14 @@ async function loadStatus() {
     document.getElementById('btn-pause').textContent = s.scheduler.paused ? '▶ 恢复自动切换' : '⏸ 暂停自动切换';
     document.getElementById('st-node').textContent = c && v.country_zh ? v.country_zh + ' ' + (v.server_ip || '') : '-';
     document.getElementById('st-ip').textContent = s.exit_ip || '-';
+    const ipHint = document.getElementById('ip-hint');
+    if (ipHint) {
+      if (!s.exit_ip && s.health && s.health.error) {
+        ipHint.textContent = '上次检测：' + s.health.error;
+      } else if (s.exit_ip) {
+        ipHint.textContent = '';
+      }
+    }
     const hms = s.health && s.health.layers && s.health.layers.tcp && s.health.layers.tcp.ms;
     document.getElementById('st-ping').textContent = hms != null ? hms + ' ms' : '-';
     document.getElementById('st-uptime').textContent = c ? fmtDur(v.uptime_s) : '-';
