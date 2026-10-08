@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.33"
+VERSION = "1.3.34"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -952,15 +952,31 @@ class Daemon:
         return {"ok": True, "msg": "更新已开始，约 30 秒后刷新页面"}
 
     def _hook_speed_test(self) -> dict:
-        """手动测速：测试当前连接的下载速度。"""
-        try:
-            if not self.controller.is_connected():
-                return {"ok": False, "error": "VPN 未连接"}
-            proxy_url, auth = self._proxy_addr()
-            r = speed_test(proxy_url, auth=auth)
-            return {"ok": True, **r}
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+        """手动测速：后台线程跑，前端轮询结果。"""
+        if not self.controller.is_connected():
+            return {"ok": False, "error": "VPN 未连接"}
+        # 如果正在测，返回进度
+        st = getattr(self, "_speedtest_state", None)
+        if st and st.get("running"):
+            return {"ok": True, "running": True}
+        # 取上次结果
+        if st and st.get("result"):
+            r = st["result"]
+            self._speedtest_state = {}
+            return {"ok": True, "running": False, **r}
+        # 启动后台线程
+        self._speedtest_state = {"running": True, "result": None}
+        def _run():
+            try:
+                proxy_url, auth = self._proxy_addr()
+                r = speed_test(proxy_url, auth=auth)
+                self._speedtest_state = {"running": False, "result": r}
+            except Exception as e:
+                self._speedtest_state = {"running": False,
+                    "result": {"ok": False, "error": str(e)[:200]}}
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "running": True}
 
     def _hook_health_check(self) -> dict:
         """手动触发健康检查（出口 IP 检测）。"""

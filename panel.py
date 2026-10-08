@@ -571,11 +571,21 @@ document.getElementById('chart-seg').addEventListener('click', e => {
 async function runSpeedTest() {
   const btn = document.getElementById('btn-speedtest');
   const box = document.getElementById('speedtest-result');
-  btn.disabled = true; btn.textContent = '测速中…（约1分钟）';
-  box.style.display = 'block'; box.className = 'note'; box.textContent = '正在经当前连接下载测速文件…';
+  btn.disabled = true; btn.textContent = '测速中…';
+  box.style.display = 'block'; box.className = 'note'; box.textContent = '正在经当前连接下载测速文件（约1分钟）…';
   try {
-    const r = await api('/api/speed_test', 'POST', {});
-    if (r.ok && r.mbps) {
+    let r = await api('/api/speed_test', 'POST', {});
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    // 轮询结果
+    for (let i = 0; i < 45; i++) {
+      await new Promise(res => setTimeout(res, 2000));
+      r = await api('/api/speed_test', 'POST', {});
+      if (!r.ok) throw new Error(r.error || '测速失败');
+      if (!r.running) break;
+      box.textContent = `测速中…（${(i+1)*2}秒）`;
+    }
+    if (r.running) throw new Error('超时，请重试');
+    if (r.mbps) {
       box.className = 'note ok';
       box.textContent = `测速完成：${r.mbps} Mbps（${r.seconds}秒，${(r.bytes/1048576).toFixed(1)}MB）`;
     } else {
