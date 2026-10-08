@@ -1421,6 +1421,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+        self.wfile.flush()
 
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False).encode())
