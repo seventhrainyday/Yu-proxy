@@ -1133,7 +1133,11 @@ async function openSettingsPage(page) {
     settingsCache[page] = true;
     updateSecretHint();
     box.querySelector('#' + CSS.escape(fieldId('panel.secret_path'))) ?.addEventListener('input', updateSecretHint);
-  } catch(e) { toast('读取设置失败：' + e.message, 'err'); }
+  } catch(e) {
+    toast('读取设置失败：' + e.message, 'err');
+    box.innerHTML = '<div class="note err">读取设置失败：' + esc(e.message) +
+      '<br><button class="btn mini" onclick="settingsCache[\'' + page + '\']=false;openSettingsPage(\'' + page + '\')">重试</button></div>';
+  }
 }
 function updateSecretHint() {
   const hint = document.getElementById('secret-url-hint');
