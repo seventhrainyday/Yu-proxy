@@ -167,6 +167,8 @@ button{font-family:inherit}
 .filterbar input,.filterbar select{background:var(--input-bg);border:1px solid var(--card-border);
   color:var(--txt);border-radius:var(--r-btn);padding:10px 13px;font-size:14px;font-family:inherit;outline:none}
 .filterbar input{flex:1;min-width:180px}
+.filterbar select{max-width:100%}
+@media (max-width:600px){.filterbar select{flex:1 1 40%;min-width:0}}
 .check{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--dim);cursor:pointer}
 .node-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
 .node-card{background:var(--card);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
