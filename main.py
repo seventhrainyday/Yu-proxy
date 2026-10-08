@@ -46,7 +46,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.54"
+VERSION = "1.3.55"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1098,8 +1098,8 @@ class Daemon:
             self.log(f"[pool] 下载合并失败: {e}")
             return 0
 
-    def _pool_upload_working(self) -> dict:
-        """上传本地可用节点到公共池（后台线程，节流）。"""
+    def _pool_upload_working(self, _skip_throttle=False) -> dict:
+        """上传本地可用节点到公共池（同步，返回真实结果）。"""
         try:
             pcfg = self.cfg.get("pool", {})
             if not pcfg.get("enabled"):
@@ -1107,28 +1107,29 @@ class Daemon:
             api_base = pcfg.get("api_base", "").strip()
             if not api_base:
                 return {"ok": False, "error": "未配置 API 地址"}
-            # 节流：检查上次上传时间
-            last = getattr(self, "_pool_last_upload", 0)
-            interval = int(pcfg.get("upload_interval_h", 6)) * 3600
-            if time.time() - last < interval:
-                return {"ok": True, "skipped": True}
+            # 节流：检查上次上传时间（手动触发可跳过）
+            if not _skip_throttle:
+                last = getattr(self, "_pool_last_upload", 0)
+                interval = int(pcfg.get("upload_interval_h", 6)) * 3600
+                if time.time() - last < interval:
+                    return {"ok": True, "skipped": True,
+                            "error": f"{int(interval/3600)} 小时内已上传过"}
             servers, _ = vpngate.load_cache(self.data_dir)
             # 可用 = 探测成功过（last_probe_ok 有值且不早于 last_probe）
             working = [s for s in servers
                        if s.get("last_probe_ok") and s.get("last_probe_ok") >= s.get("last_probe", 0) - 1
                        and s.get("config_b64")]
             if not working:
-                return {"ok": True, "uploaded": 0}
-            def _run():
-                try:
-                    r = upload_nodes(api_base, working)
-                    self.log(f"[pool] 上传 {len(working)} 个节点: {r}")
-                except Exception as e:
-                    self.log(f"[pool] 上传失败: {e}")
-            import threading
-            threading.Thread(target=_run, daemon=True).start()
-            self._pool_last_upload = time.time()
-            return {"ok": True, "queued": len(working)}
+                return {"ok": True, "added": 0, "updated": 0,
+                        "error": "没有可用节点（先等探测完成）"}
+            # 同步上传，拿真实结果
+            r = upload_nodes(api_base, working)
+            if r.get("ok"):
+                self._pool_last_upload = time.time()
+                self.log(f"[pool] 上传 {len(working)} 个节点: added={r.get('added')} updated={r.get('updated')}")
+            else:
+                self.log(f"[pool] 上传失败: {r.get('error')}")
+            return r
         except Exception as e:
             return {"ok": False, "error": str(e)[:200]}
 
@@ -1148,8 +1149,7 @@ class Daemon:
 
     def _hook_pool_upload(self) -> dict:
         # 手动触发上传（忽略节流）
-        self._pool_last_upload = 0
-        return self._pool_upload_working()
+        return self._pool_upload_working(_skip_throttle=True)
 
     def _hook_restart(self) -> dict:
         """重启服务：跨平台，命令完全脱离父进程。"""

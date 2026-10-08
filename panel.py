@@ -599,15 +599,23 @@ async function restartService() {
 }
 setTimeout(loadPoolStats, 1500);
 async function poolUpload() {
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '上传中…';
   try {
     const r = await api('/api/pool_upload', 'POST', {});
     if (r.ok) {
-      const n = r.queued || 0;
-      toast(n > 0 ? `已上传 ${n} 个节点` : '没有可用节点可上传（先等探测完成）', n > 0 ? 'ok' : 'err');
+      const a = r.added || 0, u = r.updated || 0;
+      if (a + u > 0) {
+        toast(`上传成功：新增 ${a}，更新 ${u}`, 'ok');
+        loadPoolStats();
+      } else {
+        toast(r.error || '没有可上传的节点', 'err');
+      }
     } else {
       toast('上传失败：' + (r.error || ''), 'err');
     }
   } catch(e) { toast('上传失败：' + e.message, 'err'); }
+  btn.disabled = false; btn.innerHTML = '⬆ 上传节点';
 }
 async function runSpeedTest() {
   const btn = document.getElementById('btn-speedtest');
