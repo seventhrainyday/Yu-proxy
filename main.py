@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.34"
+VERSION = "1.3.35"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 

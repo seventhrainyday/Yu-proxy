@@ -294,7 +294,7 @@ button{font-family:inherit}
             <button data-min="30">30分钟</button>
           </div>
         </div>
-        <canvas id="chart"></canvas>
+        <div style="position:relative"><canvas id="chart" style="width:100%;display:block"></canvas><div id="chart-tip" style="display:none;position:absolute;pointer-events:none;background:rgba(20,22,36,.92);color:#fff;padding:6px 10px;border-radius:8px;font-size:12px;z-index:5;white-space:nowrap"></div></div>
         <div class="legend"><span class="lg"><i style="background:#3b82f6"></i>下行</span><span class="lg"><i style="background:#22c55e"></i>上行</span></div>
       </div>
       <div class="card">
@@ -710,7 +710,37 @@ function drawChart() {
     ctx.fillStyle = g; ctx.fill();
   };
   line(2, '#3b82f6'); line(1, '#22c55e');
+  // 保存供 tooltip 用
+  c._chartData = data; c._chartX = X; c._chartY = Y; c._chartW = W; c._chartH = H;
 }
+(function() {
+  const c = document.getElementById('chart');
+  const tip = document.getElementById('chart-tip');
+  if (!c || !tip) return;
+  c.addEventListener('mousemove', e => {
+    const d = c._chartData;
+    if (!d || d.length < 2) { tip.style.display = 'none'; return; }
+    const r = c.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    // 找到最近的点
+    let best = 0, bd = 1e9;
+    d.forEach((s, i) => { const x = c._chartX(i); const dd = Math.abs(x - mx); if (dd < bd) { bd = dd; best = i; } });
+    const s = d[best];
+    const t = new Date(s[0] * 1000);
+    const hh = String(t.getHours()).padStart(2, '0'), mm = String(t.getMinutes()).padStart(2, '0'), ss = String(t.getSeconds()).padStart(2, '0');
+    tip.innerHTML = `${hh}:${mm}:${ss}<br>⬇ ${fmtBps(s[2])}　⬆ ${fmtBps(s[1])}`;
+    tip.style.display = 'block';
+    const x = c._chartX(best);
+    tip.style.left = Math.min(Math.max(x + 10, 0), r.width - 120) + 'px';
+    tip.style.top = '10px';
+  });
+  c.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  // 移动端 touch
+  c.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    c.dispatchEvent(new MouseEvent('mousemove', {clientX: t.clientX, clientY: t.clientY}));
+  }, {passive: true});
+})();
 const EV_ICON = {connect:'✅', disconnect:'🔌', switch:'🔀', fail:'⚠️', block:'🚫', unblock:'♻️',
   pause:'⏸', resume:'▶', refresh:'🔄', custom:'📦', exit:'🔌', update:'⬆️', config:'⚙️'};
 const EV_COLOR = {connect:'#22c55e', switch:'#3b82f6', fail:'#ef4444', block:'#f97316',
