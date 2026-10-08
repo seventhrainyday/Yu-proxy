@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.39"
+VERSION = "1.3.40"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -76,11 +76,11 @@ def default_config() -> dict:
         },
         "vpngate": {
             "api_urls": ["https://www.vpngate.net/api/iphone/"],
-            "refresh_interval_h": 6,
+            "refresh_interval_h": 1,
         },
         "probe": {
             "threads": 20,
-            "full_check_interval_h": 24,
+            "full_check_interval_h": 6,
             "expire_hours": 72,
         },
         "ipquality": {
@@ -211,14 +211,14 @@ def validate_config(cfg: dict) -> str | None:
         pb = cfg.get("probe", {})
         if not 1 <= int(pb.get("threads", 20)) <= 100:
             return "probe.threads 须在 1-100 之间"
-        if float(pb.get("full_check_interval_h", 24)) < 0:
+        if float(pb.get("full_check_interval_h", 6)) < 0:
             return "probe.full_check_interval_h 非法"
         if float(pb.get("expire_hours", 72)) < 0:
             return "probe.expire_hours 非法"
         iq = cfg.get("ipquality", {})
         if float(iq.get("cache_days", 7)) < 0:
             return "ipquality.cache_days 非法"
-        if float(cfg["vpngate"].get("refresh_interval_h", 6)) < 1:
+        if float(cfg["vpngate"].get("refresh_interval_h", 1)) < 1:
             return "vpngate.refresh_interval_h 不能小于 1 小时"
         if not isinstance(cfg["killswitch"].get("allow_hosts"), list):
             return "killswitch.allow_hosts 须为列表"
@@ -1336,7 +1336,7 @@ class Daemon:
         while not self._stop_event.wait(3600):
             try:
                 hours = float(
-                    self.cfg["vpngate"].get("refresh_interval_h", 6))
+                    self.cfg["vpngate"].get("refresh_interval_h", 1))
             except (TypeError, ValueError):
                 hours = 6
             # 每小时醒一次，用累计器实现可变间隔

@@ -63,11 +63,21 @@ except Exception:
 cfg.setdefault("data_dir", "/var/lib/Yu-proxy")
 p = cfg.setdefault("panel", {})
 p.setdefault("bind", "0.0.0.0")
-p.setdefault("port", 52051)
-if not str(p.get("user", "")).strip():
-    p["user"] = "admin"
-if not str(p.get("pass", "")).strip():
-    p["pass"] = "admin"
+# 全新安装时用交互输入的值（环境变量），升级时保留原有
+import os as _os
+if is_new:
+    try:
+        p["port"] = int(_os.environ.get("YU_PANEL_PORT", "52051"))
+    except Exception:
+        p["port"] = 52051
+    p["user"] = _os.environ.get("YU_PANEL_USER", "admin") or "admin"
+    p["pass"] = _os.environ.get("YU_PANEL_PASS", "admin") or "admin"
+else:
+    p.setdefault("port", 52051)
+    if not str(p.get("user", "")).strip():
+        p["user"] = "admin"
+    if not str(p.get("pass", "")).strip():
+        p["pass"] = "admin"
 p.pop("token", None)  # 旧版 token 字段不再使用
 # 隐藏路径：只在全新安装时自动生成；升级时不碰（避免更新后地址突变把用户锁在外面），
 # 用户可在面板「安全与风控 → 面板安全」里手动生成并复制地址
