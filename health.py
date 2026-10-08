@@ -244,13 +244,25 @@ def speed_test_ookla(iface: str, timeout: int = 90) -> dict:
     import shutil
     import json as _json
     if not shutil.which("speedtest"):
-        return {"ok": False, "error": "未安装 speedtest CLI，请执行: apk add speedtest-cli 或从 speedtest.net 下载"}
+        return {"ok": False, "error": "未安装 Ookla speedtest，请从 https://www.speedtest.net/apps/cli 下载安装（注意不是 python 的 speedtest-cli）"}
     try:
+        # 先确认是 Ookla 版（支持 --interface）
+        hr = subprocess.run(["speedtest", "--help"], capture_output=True, text=True, timeout=10)
+        if "--interface" not in (hr.stdout + hr.stderr):
+            return {"ok": False, "error": "当前 speedtest 不支持 --interface，请安装 Ookla 官方版（https://www.speedtest.net/apps/cli）"}
         cmd = ["speedtest", f"--interface={iface}", "--json", "--timeout", str(timeout)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 15)
+        out = r.stdout.strip()
         if r.returncode != 0:
-            return {"ok": False, "error": (r.stderr.strip() or r.stdout.strip() or f"退出码 {r.returncode}")[:200]}
-        d = _json.loads(r.stdout)
+            return {"ok": False, "error": (r.stderr.strip() or out or f"退出码 {r.returncode}")[:200]}
+        if not out:
+            return {"ok": False, "error": f"speedtest 无输出，stderr: {r.stderr.strip()[:100]}"}
+        # 尝试从输出中提取 JSON（有些版本会混入警告文本）
+        js = out
+        if not js.startswith("{"):
+            i = out.find("{")
+            js = out[i:] if i >= 0 else out
+        d = _json.loads(js)
         dl = d.get("download", {}).get("bandwidth", 0)  # bytes/sec
         ul = d.get("upload", {}).get("bandwidth", 0)
         ping = d.get("ping", {}).get("latency", 0)
