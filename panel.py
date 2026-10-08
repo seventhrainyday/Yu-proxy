@@ -571,7 +571,7 @@ document.getElementById('chart-seg').addEventListener('click', e => {
 async function runSpeedTest() {
   const btn = document.getElementById('btn-speedtest');
   const box = document.getElementById('speedtest-result');
-  btn.disabled = true; btn.textContent = '测速中…（最长30秒）';
+  btn.disabled = true; btn.textContent = '测速中…（最长2分钟）';
   box.style.display = 'block'; box.className = 'note'; box.textContent = '正在经隧道下载测速文件，请稍候…';
   try {
     const r = await api('/api/speed_test', 'POST', {});

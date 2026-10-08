@@ -279,16 +279,15 @@ def speed_test_ookla(iface: str, timeout: int = 90) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
-def simple_speed_test(iface: str, timeout: int = 30) -> dict:
-    """极简同步版：curl 绑定网卡下载 5MB，阻塞返回。"""
+def simple_speed_test(iface: str, timeout: int = 120) -> dict:
+    """极简同步版：curl 绑定网卡下载 100MB，阻塞返回。"""
     import subprocess
     import shutil
     if not shutil.which("curl"):
         return {"ok": False, "error": "未安装 curl"}
-    # 用 5MB 文件，平衡速度和准确性
     urls = [
-        "http://cachefly.cachefly.net/5mb.test",
-        "https://speed.cloudflare.com/__down?bytes=5000000",
+        "https://speed.cloudflare.com/__down?bytes=100000000",
+        "http://cachefly.cachefly.net/100mb.test",
     ]
     last_err = ""
     for url in urls:
