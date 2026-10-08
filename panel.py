@@ -1079,6 +1079,10 @@ async function openSettingsPage(page) {
   const msg = box.closest('.card').querySelector('[data-msg]');
   if (msg) { msg.textContent = ''; }
   try {
+    // 筛选页需要节点数据来渲染国家选项
+    if (page === 'sched-filter' && (!servers || !servers.length)) {
+      try { await loadServers(); } catch(e) {}
+    }
     const r = await api('/api/config');
     if (!r.ok) throw new Error(r.error || '读取失败');
     curConfig = r.config;
