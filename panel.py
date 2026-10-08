@@ -578,7 +578,9 @@ async function loadPoolStats() {
   try {
     const r = await api('/api/pool_stats', 'GET');
     const el = document.getElementById('pool-stats');
-    if (r.ok) {
+    if (r.enabled === false) {
+      el.textContent = '公共节点池：未启用（去基础调度里打开）';
+    } else if (r.ok) {
       el.textContent = `公共节点池：${r.total} 个节点（24h 活跃 ${r.active_24h}）`;
     } else {
       el.textContent = '公共节点池：' + (r.error || '不可用');
@@ -595,10 +597,16 @@ async function restartService() {
     setTimeout(() => location.reload(), 8000);
   } catch(e) { toast('重启请求失败：' + e.message, 'err'); }
 }
+setTimeout(loadPoolStats, 1500);
 async function poolUpload() {
   try {
     const r = await api('/api/pool_upload', 'POST', {});
-    toast(r.ok ? `已上传 ${r.queued || 0} 个节点` : ('上传失败：' + (r.error || '')), r.ok ? 'ok' : 'err');
+    if (r.ok) {
+      const n = r.queued || 0;
+      toast(n > 0 ? `已上传 ${n} 个节点` : '没有可用节点可上传（先等探测完成）', n > 0 ? 'ok' : 'err');
+    } else {
+      toast('上传失败：' + (r.error || ''), 'err');
+    }
   } catch(e) { toast('上传失败：' + e.message, 'err'); }
 }
 async function runSpeedTest() {

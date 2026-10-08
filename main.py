@@ -46,7 +46,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.51"
+VERSION = "1.3.52"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1133,10 +1133,16 @@ class Daemon:
     def _hook_pool_stats(self) -> dict:
         try:
             pcfg = self.cfg.get("pool", {})
+            if not pcfg.get("enabled"):
+                return {"ok": False, "error": "未启用", "enabled": False}
             api_base = pcfg.get("api_base", "").strip()
-            return pool_stats(api_base) if api_base else {"ok": False, "error": "未配置"}
+            if not api_base:
+                return {"ok": False, "error": "未配置 API 地址", "enabled": True}
+            r = pool_stats(api_base)
+            r["enabled"] = True
+            return r
         except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+            return {"ok": False, "error": str(e)[:200], "enabled": True}
 
     def _hook_pool_upload(self) -> dict:
         # 手动触发上传（忽略节流）
@@ -1144,16 +1150,31 @@ class Daemon:
         return self._pool_upload_working()
 
     def _hook_restart(self) -> dict:
-        """重启服务：响应后 2 秒退出进程，systemd 自动拉起。"""
+        """重启服务：跨平台（systemd/OpenRC），后台执行。"""
         def _run():
-            import os
+            import subprocess, shutil
             time.sleep(2)
-            # 非 0 退出触发 systemd Restart=on-failure
-            os._exit(1)
+            try:
+                # 按优先级试各种重启方式
+                if shutil.which("systemctl"):
+                    subprocess.run(["systemctl", "restart", "Yu-proxy"],
+                                   timeout=30, capture_output=True)
+                elif shutil.which("rc-service"):
+                    subprocess.run(["rc-service", "Yu-proxy", "restart"],
+                                   timeout=30, capture_output=True)
+                elif shutil.which("service"):
+                    subprocess.run(["service", "Yu-proxy", "restart"],
+                                   timeout=30, capture_output=True)
+                else:
+                    # 兜底：退出进程靠外部拉起
+                    import os
+                    os._exit(1)
+            except Exception as e:
+                self.log(f"[api] 重启失败: {e}")
         import threading
         threading.Thread(target=_run, daemon=True).start()
-        self.log("[api] 收到重启请求，2 秒后退出")
-        return {"ok": True, "msg": "正在重启，约 5 秒后刷新页面"}
+        self.log("[api] 收到重启请求，2 秒后执行")
+        return {"ok": True, "msg": "正在重启，约 10 秒后刷新页面"}
 
     def _all_servers(self) -> list[dict]:
         """VPNGate 缓存节点 + 用户自定义导入节点，统一调度池。"""
