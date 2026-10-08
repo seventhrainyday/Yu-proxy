@@ -307,7 +307,9 @@ button{font-family:inherit}
           <button class="btn warn" onclick="clearBlacklist()">🧹 清空黑名单</button>
           <button class="btn danger" onclick="disconnect()">断开</button>
           <button class="btn" onclick="refreshServers()">🔄 刷新节点列表</button>
+          <button class="btn" id="btn-speedtest" onclick="runSpeedTest()">📶 测速（当前连接）</button>
         </div>
+        <div class="note" id="speedtest-result" style="display:none;margin-top:8px"></div>
         <div class="note" id="proxy-info" style="margin-top:12px"></div>
       </div>
       <div class="card">
@@ -566,6 +568,26 @@ document.getElementById('chart-seg').addEventListener('click', e => {
   document.querySelectorAll('#chart-seg button').forEach(x => x.classList.toggle('active', x === b));
   drawChart();
 });
+async function runSpeedTest() {
+  const btn = document.getElementById('btn-speedtest');
+  const box = document.getElementById('speedtest-result');
+  btn.disabled = true; btn.textContent = '测速中…（约1分钟）';
+  box.style.display = 'block'; box.className = 'note'; box.textContent = '正在经当前连接下载测速文件…';
+  try {
+    const r = await api('/api/speed_test', 'POST', {});
+    if (r.ok && r.mbps) {
+      box.className = 'note ok';
+      box.textContent = `测速完成：${r.mbps} Mbps（${r.seconds}秒，${(r.bytes/1048576).toFixed(1)}MB）`;
+    } else {
+      box.className = 'note err';
+      box.textContent = '测速失败：' + (r.error || '未知错误');
+    }
+  } catch(e) {
+    box.className = 'note err';
+    box.textContent = '测速失败：' + e.message;
+  }
+  btn.disabled = false; btn.textContent = '📶 测速（当前连接）';
+}
 async function checkExitIP() {
   const hint = document.getElementById('ip-hint');
   if (hint) hint.textContent = '检测中…';
@@ -1603,6 +1625,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["killswitch"](body))
             elif path == "/api/notify_test":
                 self._json(self.hooks["notify_test"]())
+            elif path == "/api/speed_test":
+                self._json(self.hooks["speed_test"]())
             elif path == "/api/custom_add":
                 self._json(self.hooks["custom_add"](body))
             elif path == "/api/custom_delete":

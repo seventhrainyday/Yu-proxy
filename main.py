@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
-from health import HealthChecker
+from health import HealthChecker, speed_test
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.30"
+VERSION = "1.3.31"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -508,6 +508,7 @@ class Daemon:
             "update_check": self._hook_update_check,
             "update": self._hook_update,
             "health_check": self._hook_health_check,
+            "speed_test": self._hook_speed_test,
             "blacklist_clear": self._hook_blacklist_clear,
             "log_clear": self._hook_log_clear,
             "config_import": self._hook_config_import,
@@ -949,6 +950,17 @@ class Daemon:
         self._event("update", "开始一键更新，服务将自动重启", None)
         self.log("[update] 一键更新已启动")
         return {"ok": True, "msg": "更新已开始，约 30 秒后刷新页面"}
+
+    def _hook_speed_test(self) -> dict:
+        """手动测速：测试当前连接的下载速度。"""
+        try:
+            if not self.controller.is_connected():
+                return {"ok": False, "error": "VPN 未连接"}
+            proxy_url, auth = self._proxy_addr
+            r = speed_test(proxy_url, auth=auth)
+            return {"ok": True, **r}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
 
     def _hook_health_check(self) -> dict:
         """手动触发健康检查（出口 IP 检测）。"""
