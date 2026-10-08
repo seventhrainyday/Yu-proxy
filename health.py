@@ -279,6 +279,47 @@ def speed_test_ookla(iface: str, timeout: int = 90) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
+def simple_speed_test(iface: str, timeout: int = 30) -> dict:
+    """极简同步版：curl 绑定网卡下载 5MB，阻塞返回。"""
+    import subprocess
+    import shutil
+    if not shutil.which("curl"):
+        return {"ok": False, "error": "未安装 curl"}
+    # 用 5MB 文件，平衡速度和准确性
+    urls = [
+        "http://cachefly.cachefly.net/5mb.test",
+        "https://speed.cloudflare.com/__down?bytes=5000000",
+    ]
+    last_err = ""
+    for url in urls:
+        try:
+            cmd = ["curl", "--interface", iface, "-o", "/dev/null", "-s",
+                   "-w", "%{time_total},%{size_download}",
+                   "--max-time", str(timeout), url]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+            if r.returncode != 0:
+                last_err = f"curl 退出码 {r.returncode}"
+                continue
+            parts = r.stdout.strip().split(",")
+            if len(parts) != 2:
+                last_err = "输出异常"
+                continue
+            t = float(parts[0]); sz = float(parts[1])
+            if sz < 1024 or t <= 0:
+                last_err = "下载数据过少"
+                continue
+            mbps = (sz * 8) / t / 1_000_000
+            return {"ok": True, "mbps": round(mbps, 1),
+                    "seconds": round(t, 1), "bytes": int(sz), "url": url, "error": ""}
+        except subprocess.TimeoutExpired:
+            last_err = "超时"
+            continue
+        except Exception as e:
+            last_err = str(e)[:100]
+            continue
+    return {"ok": False, "error": last_err}
+
+
 class HealthChecker:
     """对当前隧道做多层健康检查。"""
 

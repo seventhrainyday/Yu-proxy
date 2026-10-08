@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
-from health import HealthChecker, speed_test, speed_test_iface, speed_test_ookla
+from health import HealthChecker, speed_test, speed_test_iface, speed_test_ookla, simple_speed_test
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.44"
+VERSION = "1.3.45"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -952,35 +952,15 @@ class Daemon:
         return {"ok": True, "msg": "更新已开始，约 30 秒后刷新页面"}
 
     def _hook_speed_test(self) -> dict:
-        """手动测速（方案2）：绑定隧道网卡直接下载，后台线程跑，前端轮询。"""
+        """手动测速（极简同步版）：绑定隧道网卡下载 5MB，阻塞最多 35 秒返回。"""
         try:
             device = self._current_device()
             if not device:
                 return {"ok": False, "error": "VPN 未连接，无法测速"}
-            st = getattr(self, "_speedtest_state", None)
-            if st and st.get("running"):
-                return {"ok": True, "running": True}
-            if st and st.get("result"):
-                r = st["result"]
-                self._speedtest_state = {}
-                return {"ok": True, "running": False, **r}
-            self._speedtest_state = {"running": True, "result": None}
-            def _run():
-                try:
-                    # 方案1优先：Ookla CLI
-                    r = speed_test_ookla(device, timeout=90)
-                    # 没装 speedtest 时回退到方案2 curl
-                    if not r["ok"] and "未安装" in r.get("error", ""):
-                        r = speed_test_iface(device, timeout=60)
-                    self._speedtest_state = {"running": False, "result": r}
-                except Exception as e:
-                    self._speedtest_state = {"running": False,
-                        "result": {"ok": False, "error": str(e)[:200]}}
-            import threading
-            threading.Thread(target=_run, daemon=True).start()
-            return {"ok": True, "running": True}
+            r = simple_speed_test(device, timeout=30)
+            return {"ok": True, **r}
         except Exception as e:
-            return {"ok": False, "error": f"启动失败: {e}"}
+            return {"ok": False, "error": str(e)[:200]}
 
     def _hook_health_check(self) -> dict:
         """手动触发健康检查（出口 IP 检测）。"""
