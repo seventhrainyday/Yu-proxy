@@ -46,7 +46,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.53"
+VERSION = "1.3.54"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1152,23 +1152,26 @@ class Daemon:
         return self._pool_upload_working()
 
     def _hook_restart(self) -> dict:
-        """重启服务：跨平台（systemd/OpenRC），后台执行。"""
+        """重启服务：跨平台，命令完全脱离父进程。"""
         def _run():
             import subprocess, shutil
             time.sleep(2)
             try:
-                # 按优先级试各种重启方式
+                cmd = None
                 if shutil.which("systemctl"):
-                    subprocess.run(["systemctl", "restart", "Yu-proxy"],
-                                   timeout=30, capture_output=True)
+                    cmd = ["systemctl", "restart", "Yu-proxy"]
                 elif shutil.which("rc-service"):
-                    subprocess.run(["rc-service", "Yu-proxy", "restart"],
-                                   timeout=30, capture_output=True)
+                    cmd = ["rc-service", "Yu-proxy", "restart"]
                 elif shutil.which("service"):
-                    subprocess.run(["service", "Yu-proxy", "restart"],
-                                   timeout=30, capture_output=True)
+                    cmd = ["service", "Yu-proxy", "restart"]
+                if cmd:
+                    # 完全脱离：新会话、IO 重定向，父进程退出不影响
+                    subprocess.Popen(cmd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True)
                 else:
-                    # 兜底：退出进程靠外部拉起
                     import os
                     os._exit(1)
             except Exception as e:
