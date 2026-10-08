@@ -46,7 +46,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.52"
+VERSION = "1.3.53"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1113,8 +1113,10 @@ class Daemon:
             if time.time() - last < interval:
                 return {"ok": True, "skipped": True}
             servers, _ = vpngate.load_cache(self.data_dir)
+            # 可用 = 探测成功过（last_probe_ok 有值且不早于 last_probe）
             working = [s for s in servers
-                       if s.get("probe_status") == "available" and s.get("config_b64")]
+                       if s.get("last_probe_ok") and s.get("last_probe_ok") >= s.get("last_probe", 0) - 1
+                       and s.get("config_b64")]
             if not working:
                 return {"ok": True, "uploaded": 0}
             def _run():
