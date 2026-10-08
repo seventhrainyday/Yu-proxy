@@ -1598,6 +1598,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["events"]())
             elif path == "/api/throughput":
                 self._json(self.hooks["throughput"]())
+            elif path == "/api/pool_stats":
+                self._json(self.hooks["pool_stats"]())
             elif path == "/api/exits":
                 self._json(self.hooks["exits"]())
             elif path == "/api/custom_list":
@@ -1696,6 +1698,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["health_check"]())
             elif path == "/api/speed_test":
                 self._json(self.hooks["speed_test"]())
+            elif path == "/api/pool_upload":
+                self._json(self.hooks["pool_upload"]())
+            elif path == "/api/restart":
+                self._json(self.hooks["restart"]())
             elif path == "/api/custom_add":
                 self._json(self.hooks["custom_add"](body))
             elif path == "/api/custom_delete":
