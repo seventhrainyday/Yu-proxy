@@ -1104,7 +1104,6 @@ async function openSettingsPage(page) {
     const r = await api('/api/config');
     if (!r.ok) throw new Error(r.error || '读取失败');
     curConfig = r.config;
-    settingsCache[page] = true;
     box.innerHTML = SETTINGS[page].map(f => {
       const [path, label, type, extra] = f;
       let v = cfgGet(curConfig, path);
@@ -1131,6 +1130,7 @@ async function openSettingsPage(page) {
       }
       return `<div class="f-row"><label>${label}</label>${input}</div>`;
     }).join('');
+    settingsCache[page] = true;
     updateSecretHint();
     box.querySelector('#' + CSS.escape(fieldId('panel.secret_path'))) ?.addEventListener('input', updateSecretHint);
   } catch(e) { toast('读取设置失败：' + e.message, 'err'); }
