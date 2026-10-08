@@ -1625,6 +1625,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["killswitch"](body))
             elif path == "/api/notify_test":
                 self._json(self.hooks["notify_test"]())
+            elif path == "/api/health_check":
+                self._json(self.hooks["health_check"]())
             elif path == "/api/speed_test":
                 self._json(self.hooks["speed_test"]())
             elif path == "/api/custom_add":

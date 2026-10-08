@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.31"
+VERSION = "1.3.32"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -956,7 +956,7 @@ class Daemon:
         try:
             if not self.controller.is_connected():
                 return {"ok": False, "error": "VPN 未连接"}
-            proxy_url, auth = self._proxy_addr
+            proxy_url, auth = self._proxy_addr()
             r = speed_test(proxy_url, auth=auth)
             return {"ok": True, **r}
         except Exception as e:
