@@ -190,6 +190,54 @@ def speed_test(proxy: str, auth: tuple | None = None,
             "url": "", "error": last_err}
 
 
+# 测速文件（方案2：HTTP 小文件，绑定隧道网卡）
+SPEEDTEST_IFACE_URLS = [
+    "https://speed.cloudflare.com/__down?bytes=10000000",  # 10MB
+    "http://cachefly.cachefly.net/10mb.test",
+]
+
+def speed_test_iface(iface: str, timeout: int = 60) -> dict:
+    """经指定网卡下载测速（curl --interface）。返回 {ok, mbps, bytes, seconds, url, error}。"""
+    import subprocess
+    import shutil
+    if not shutil.which("curl"):
+        return {"ok": False, "mbps": 0, "bytes": 0, "seconds": 0,
+                "url": "", "error": "未安装 curl，请先安装"}
+    last_err = ""
+    for url in SPEEDTEST_IFACE_URLS:
+        try:
+            # -o /dev/null: 不保存文件；-s: 静默；-w: 输出统计；--max-time: 超时
+            cmd = ["curl", "--interface", iface, "-o", "/dev/null", "-s",
+                   "-w", "%{time_total},%{size_download},%{speed_download}",
+                   "--max-time", str(timeout), url]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 10)
+            if r.returncode != 0:
+                last_err = (r.stderr.strip() or f"curl 退出码 {r.returncode}")[:200]
+                continue
+            parts = r.stdout.strip().split(",")
+            if len(parts) != 3:
+                last_err = f"curl 输出异常: {r.stdout[:100]}"
+                continue
+            t_total = float(parts[0])
+            size_dl = float(parts[1])
+            speed_bps = float(parts[2])  # bytes/sec
+            if size_dl < 1024 or t_total <= 0:
+                last_err = "下载数据过少"
+                continue
+            mbps = (speed_bps * 8) / 1_000_000
+            return {"ok": True, "mbps": round(mbps, 1),
+                    "bytes": int(size_dl), "seconds": round(t_total, 1),
+                    "url": url, "error": ""}
+        except subprocess.TimeoutExpired:
+            last_err = "测速超时"
+            continue
+        except Exception as e:
+            last_err = str(e)[:200]
+            continue
+    return {"ok": False, "mbps": 0, "bytes": 0, "seconds": 0,
+            "url": "", "error": last_err}
+
+
 class HealthChecker:
     """对当前隧道做多层健康检查。"""
 

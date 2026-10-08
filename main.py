@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
-from health import HealthChecker, speed_test
+from health import HealthChecker, speed_test, speed_test_iface
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.40"
+VERSION = "1.3.41"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -952,10 +952,11 @@ class Daemon:
         return {"ok": True, "msg": "更新已开始，约 30 秒后刷新页面"}
 
     def _hook_speed_test(self) -> dict:
-        """手动测速：后台线程跑，前端轮询结果。"""
+        """手动测速（方案2）：绑定隧道网卡直接下载，后台线程跑，前端轮询。"""
         try:
-            if not self.controller.is_connected():
-                return {"ok": False, "error": "VPN 未连接"}
+            device = self._current_device()
+            if not device:
+                return {"ok": False, "error": "VPN 未连接，无法测速"}
             st = getattr(self, "_speedtest_state", None)
             if st and st.get("running"):
                 return {"ok": True, "running": True}
@@ -966,8 +967,7 @@ class Daemon:
             self._speedtest_state = {"running": True, "result": None}
             def _run():
                 try:
-                    proxy_url, auth = self._proxy_addr()
-                    r = speed_test(proxy_url, auth=auth)
+                    r = speed_test_iface(device, timeout=60)
                     self._speedtest_state = {"running": False, "result": r}
                 except Exception as e:
                     self._speedtest_state = {"running": False,
