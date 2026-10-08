@@ -1136,8 +1136,12 @@ async function openSettingsPage(page) {
   } catch(e) {
     toast('读取设置失败：' + e.message, 'err');
     box.innerHTML = '<div class="note err">读取设置失败：' + esc(e.message) +
-      '<br><button class="btn mini" onclick="settingsCache[\'' + page + '\']=false;openSettingsPage(\'' + page + '\')">重试</button></div>';
+      '<br><button class="btn mini" data-retry-page="' + page + '" onclick="retrySettings(this.dataset.retryPage)">重试</button></div>';
   }
+}
+function retrySettings(page) {
+  settingsCache[page] = false;
+  openSettingsPage(page);
 }
 function updateSecretHint() {
   const hint = document.getElementById('secret-url-hint');
