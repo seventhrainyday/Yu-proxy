@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.24"
+VERSION = "1.3.25"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1401,9 +1401,15 @@ class Daemon:
         # Kill-switch（按配置启用）
         self._ks_ensure()
 
-        # 自动测速线程
-        threading.Thread(target=self._speedtest_loop, daemon=True,
-                         name="speedtest-auto").start()
+        # 自动测速线程（仅当配置了间隔时启动，避免空转线程）
+        try:
+            _st_interval = int(self.cfg.get("speedtest", {})
+                               .get("auto_interval_min", 0))
+        except Exception:
+            _st_interval = 0
+        if _st_interval > 0:
+            threading.Thread(target=self._speedtest_loop, daemon=True,
+                             name="speedtest-auto").start()
 
         # 开机自动连接
         if self.cfg["vpn"].get("autoconnect", True):
