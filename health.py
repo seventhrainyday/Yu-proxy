@@ -11,6 +11,7 @@ import socket
 import re
 import time
 import urllib.request
+import urllib.error
 
 # 真实连通性探测站：一个要 204、一个回显出口 IP
 PROBE_URLS = [
@@ -140,8 +141,8 @@ def http_probe(proxy: str, urls: list[str] | None = None,
 # 测速用的文件源（Cloudflare 测速端点优先，支持指定字节数）
 SPEEDTEST_URLS = [
     "https://speed.cloudflare.com/__down?bytes=20000000",  # 20MB
-    "http://cachefly.cachefly.net/20mb.test",
-    "https://proof.ovh.net/files/20Mb.dat",
+    "http://cachefly.cachefly.net/10mb.test",
+    "https://proof.ovh.net/files/10Mb.dat",
 ]
 
 
@@ -180,6 +181,9 @@ def speed_test(proxy: str, auth: tuple[str, str] | None = None,
             return {"ok": True, "mbps": round(mbps, 1),
                     "bytes": total, "seconds": round(secs, 1),
                     "url": url, "error": ""}
+        except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code}（{url}）"
+            continue
         except Exception as e:
             last_err = str(e).split("\n")[0][:200]
             continue
