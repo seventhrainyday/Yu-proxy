@@ -1387,8 +1387,8 @@ initTheme();
 loadStatus();
 tickThroughput();
 loadEvents();
-setInterval(loadStatus, 5000);
-setInterval(tickThroughput, 5000);
+setInterval(loadStatus, 2000);
+setInterval(tickThroughput, 2000);
 setInterval(loadEvents, 15000);
 window.addEventListener('resize', drawChart);
 </script>
