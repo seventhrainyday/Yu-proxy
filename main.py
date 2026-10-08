@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.38"
+VERSION = "1.3.39"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -55,7 +55,7 @@ def default_config() -> dict:
         "panel": {"bind": "0.0.0.0", "port": 52051,
                   "user": "admin", "pass": "admin", "secret_path": ""},
         "proxy": {
-            "bind": "0.0.0.0", "port": 52052,
+            "bind": "127.0.0.1", "port": 52052,
             "user": "", "pass": "",
             "dns_server": "8.8.8.8",
             "allow_direct_fallback": False,
@@ -340,7 +340,7 @@ class Daemon:
         if proxy_cfg.get("user"):
             auth = (proxy_cfg["user"], proxy_cfg.get("pass", ""))
         self.exit_manager = ExitManager(
-            self.data_dir, proxy_cfg.get("bind", "0.0.0.0"),
+            self.data_dir, proxy_cfg.get("bind", "127.0.0.1"),
             pick_server=self._pick_server,
             dns_server=proxy_cfg.get("dns_server", "8.8.8.8"),
             auth=auth, event_fn=self._watchdog_event, log=self.log)

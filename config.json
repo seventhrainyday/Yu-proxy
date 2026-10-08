@@ -10,7 +10,7 @@
   },
   "proxy": {
     "allow_direct_fallback": false,
-    "bind": "0.0.0.0",
+    "bind": "127.0.0.1",
     "dns_server": "8.8.8.8",
     "pass": "",
     "port": 52052,

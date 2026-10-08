@@ -1092,7 +1092,7 @@ const SETTINGS = {
     ['watchdog.risk_detect','风控检测（出口 IP 遇 403/验证码自动切换）','checkbox'],
     ['watchdog.fail_threshold','连续失败几次后切换','number'],
     ['watchdog.max_retries','每次故障最多试几个节点','number']],
-  'net-proxy': [['proxy.bind','监听地址','text'],
+  'net-proxy': [['proxy.bind','监听地址（127.0.0.1=仅本机，0.0.0.0=所有网卡）','text'],
     ['proxy.port','监听端口','number'],
     ['proxy.user','代理账号（空=不鉴权）','text'],
     ['proxy.pass','代理密码','password'],
