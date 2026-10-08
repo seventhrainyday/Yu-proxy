@@ -198,6 +198,7 @@ button{font-family:inherit}
   background:rgba(20,22,36,.92);color:#fff;padding:12px 22px;border-radius:14px;font-size:14px;
   z-index:99;transition:transform .25s;box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw}
 #toast.show{transform:translateX(-50%) translateY(0)}
+@media (max-width:600px){#toast{bottom:90px}}
 #toast.err{background:rgba(180,30,30,.94)}
 #toast.ok{background:rgba(20,120,60,.94)}
 .note{font-size:12px;color:var(--dim);line-height:1.7}
@@ -329,6 +330,12 @@ button{font-family:inherit}
         <div class="filterbar">
           <input id="f-q" placeholder="🔍 搜索 国家 / IP / ID…" oninput="renderNodes()">
           <select id="f-country" onchange="renderNodes()"><option value="">🌍 全部国家</option></select>
+          <select id="f-avail" onchange="renderNodes()">
+            <option value="">✅ 全部状态</option>
+            <option value="ok">可用</option>
+            <option value="bad">不可用</option>
+            <option value="unknown">未探测</option>
+          </select>
           <select id="f-sort" onchange="renderNodes()">
             <option value="default">默认排序</option>
             <option value="ipq">IP 质量优先</option>
@@ -868,7 +875,11 @@ function renderNodes() {
   let list = servers.filter(s => {
     if (hideBlocked && s.blacklisted) return false;
     const fc = document.getElementById('f-country').value;
+  const fa = document.getElementById('f-avail').value;
+  const availOf = s => !s.last_probe ? 'unknown' :
+    (s.last_probe_ok && s.last_probe_ok >= s.last_probe - 1 ? 'ok' : 'bad');
     if (fc && (s.country || '') !== fc) return false;
+    if (fa && availOf(s) !== fa) return false;
     if (q && !((s.country_zh || '') + (s.country || '') + s.ip + s.id).toLowerCase().includes(q)) return false;
     return true;
   });
