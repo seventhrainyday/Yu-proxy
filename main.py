@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
 from health import HealthChecker, speed_test, speed_test_iface, speed_test_ookla, simple_speed_test
+from pool import upload_nodes, download_nodes, pool_stats
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -45,7 +46,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.47"
+VERSION = "1.3.48"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -77,6 +78,11 @@ def default_config() -> dict:
         "vpngate": {
             "api_urls": ["https://www.vpngate.net/api/iphone/"],
             "refresh_interval_h": 1,
+        },
+        "pool": {
+            "enabled": False,
+            "api_base": "https://yu-proxy.2929.de/api",
+            "upload_interval_h": 6,
         },
         "probe": {
             "threads": 20,
@@ -509,6 +515,8 @@ class Daemon:
             "update": self._hook_update,
             "health_check": self._hook_health_check,
             "speed_test": self._hook_speed_test,
+            "pool_stats": self._hook_pool_stats,
+            "pool_upload": self._hook_pool_upload,
             "blacklist_clear": self._hook_blacklist_clear,
             "log_clear": self._hook_log_clear,
             "config_import": self._hook_config_import,
@@ -692,6 +700,11 @@ class Daemon:
             self._event("probe",
                         f"节点探测完成：{len(results)} 个中 {ok_n} 个可用"
                         + (f"，清理 {expired} 个过期节点" if expired else ""))
+            # 探测完成后，尝试上传可用节点到公共池（后台，节流）
+            try:
+                self._pool_upload_working()
+            except Exception:
+                pass
             return {"ok": True, "total": len(results), "usable": ok_n,
                     "expired": expired}
         finally:
@@ -1044,11 +1057,90 @@ class Daemon:
     def _hook_refresh(self) -> dict:
         try:
             servers = vpngate.refresh(self.data_dir)
-            self.log(f"[api] 节点列表已刷新，共 {len(servers)} 个")
-            return {"ok": True, "count": len(servers)}
+            # 从公共池合并节点
+            pool_n = self._pool_download_merge()
+            self.log(f"[api] 节点列表已刷新，共 {len(servers)} 个（公共池 +{pool_n}）")
+            return {"ok": True, "count": len(servers), "pool_added": pool_n}
         except Exception as e:
             self.log(f"[api] 刷新节点失败: {e}")
             return {"ok": False, "error": str(e)}
+
+    def _pool_download_merge(self) -> int:
+        """从公共池下载节点并合并到本地缓存。返回新增数量。"""
+        try:
+            pcfg = self.cfg.get("pool", {})
+            if not pcfg.get("enabled"):
+                return 0
+            api_base = pcfg.get("api_base", "").strip()
+            if not api_base:
+                return 0
+            r = download_nodes(api_base, limit=200)
+            if not r["ok"] or not r["nodes"]:
+                return 0
+            # 合并到 vpngate 缓存（按 id 去重）
+            servers, _ = vpngate.load_cache(self.data_dir)
+            by_id = {s["id"]: s for s in servers}
+            added = 0
+            for n in r["nodes"]:
+                if not n.get("id") or not n.get("config_b64"):
+                    continue
+                if n["id"] not in by_id:
+                    # 补齐本地字段
+                    n["probe_status"] = "unknown"
+                    n["last_probe"] = 0
+                    by_id[n["id"]] = n
+                    added += 1
+            if added:
+                vpngate.save_cache(self.data_dir, list(by_id.values()))
+            return added
+        except Exception as e:
+            self.log(f"[pool] 下载合并失败: {e}")
+            return 0
+
+    def _pool_upload_working(self) -> dict:
+        """上传本地可用节点到公共池（后台线程，节流）。"""
+        try:
+            pcfg = self.cfg.get("pool", {})
+            if not pcfg.get("enabled"):
+                return {"ok": False, "error": "未启用"}
+            api_base = pcfg.get("api_base", "").strip()
+            if not api_base:
+                return {"ok": False, "error": "未配置 API 地址"}
+            # 节流：检查上次上传时间
+            last = getattr(self, "_pool_last_upload", 0)
+            interval = int(pcfg.get("upload_interval_h", 6)) * 3600
+            if time.time() - last < interval:
+                return {"ok": True, "skipped": True}
+            servers, _ = vpngate.load_cache(self.data_dir)
+            working = [s for s in servers
+                       if s.get("probe_status") == "available" and s.get("config_b64")]
+            if not working:
+                return {"ok": True, "uploaded": 0}
+            def _run():
+                try:
+                    r = upload_nodes(api_base, working)
+                    self.log(f"[pool] 上传 {len(working)} 个节点: {r}")
+                except Exception as e:
+                    self.log(f"[pool] 上传失败: {e}")
+            import threading
+            threading.Thread(target=_run, daemon=True).start()
+            self._pool_last_upload = time.time()
+            return {"ok": True, "queued": len(working)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    def _hook_pool_stats(self) -> dict:
+        try:
+            pcfg = self.cfg.get("pool", {})
+            api_base = pcfg.get("api_base", "").strip()
+            return pool_stats(api_base) if api_base else {"ok": False, "error": "未配置"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
+    def _hook_pool_upload(self) -> dict:
+        # 手动触发上传（忽略节流）
+        self._pool_last_upload = 0
+        return self._pool_upload_working()
 
     def _all_servers(self) -> list[dict]:
         """VPNGate 缓存节点 + 用户自定义导入节点，统一调度池。"""

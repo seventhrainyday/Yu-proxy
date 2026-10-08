@@ -311,6 +311,11 @@ button{font-family:inherit}
         </div>
         <div class="note" id="speedtest-result" style="display:none;margin-top:8px"></div>
         <div class="note" id="proxy-info" style="margin-top:12px"></div>
+        <div class="note" id="pool-info" style="margin-top:8px">
+          <span id="pool-stats">公共节点池：未启用</span>
+          <button class="btn" style="margin-left:8px" onclick="poolUpload()">⬆ 上传节点</button>
+          <button class="btn" style="margin-left:4px" onclick="loadPoolStats()">🔄</button>
+        </div>
       </div>
       <div class="card">
         <h2>🔌 多出口</h2>
@@ -568,6 +573,25 @@ document.getElementById('chart-seg').addEventListener('click', e => {
   document.querySelectorAll('#chart-seg button').forEach(x => x.classList.toggle('active', x === b));
   drawChart();
 });
+async function loadPoolStats() {
+  try {
+    const r = await api('/api/pool_stats', 'GET');
+    const el = document.getElementById('pool-stats');
+    if (r.ok) {
+      el.textContent = `公共节点池：${r.total} 个节点（24h 活跃 ${r.active_24h}）`;
+    } else {
+      el.textContent = '公共节点池：' + (r.error || '不可用');
+    }
+  } catch(e) {
+    document.getElementById('pool-stats').textContent = '公共节点池：连接失败';
+  }
+}
+async function poolUpload() {
+  try {
+    const r = await api('/api/pool_upload', 'POST', {});
+    toast(r.ok ? `已上传 ${r.queued || 0} 个节点` : ('上传失败：' + (r.error || '')), r.ok ? 'ok' : 'err');
+  } catch(e) { toast('上传失败：' + e.message, 'err'); }
+}
 async function runSpeedTest() {
   const btn = document.getElementById('btn-speedtest');
   const box = document.getElementById('speedtest-result');
@@ -1063,7 +1087,10 @@ const SETTINGS = {
   'sched-basic': [['vpngate.refresh_interval_h','节点抓取间隔（小时）','number'],
     ['watchdog.interval','故障探测间隔（秒）','number'],
     ['watchdog.health_interval','健康检查间隔（秒）','number'],
-    ['vpn.connect_retries','连接失败时最多试几个节点','number']],
+    ['vpn.connect_retries','连接失败时最多试几个节点','number'],
+    ['pool.enabled','启用公共节点池（上传/下载可用节点）','checkbox'],
+    ['pool.api_base','公共节点池 API 地址','text'],
+    ['pool.upload_interval_h','节点上传间隔（小时）','number']],
   'sched-filter': [['filter.countries_allow','国家白名单（只用这些国家的节点，空=不限）','countrypick'],
     ['filter.countries_block','国家黑名单（不用这些国家的节点）','countrypick'],
     ['filter.skip_unavailable','只连接探测可用的节点（跳过探测失败的）','checkbox'],
@@ -1113,7 +1140,7 @@ const SETTINGS = {
     ['notify.events.recover','连接恢复时通知','checkbox']],
 };
 const LIST_FIELDS = ['proxy.allow_ips','killswitch.allow_hosts'];
-const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads',
+const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads','pool.upload_interval_h',
   'filter.min_bandwidth_mbps','filter.max_ping_ms','scheduler.rotate_interval_min',
   'watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries',
   'notify.email.smtp_port'];
