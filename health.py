@@ -137,6 +137,56 @@ def http_probe(proxy: str, urls: list[str] | None = None,
             "url": "", "error": last_err, "risk": False, "status": 0}
 
 
+# 测速用的文件源（Cloudflare 测速端点优先，支持指定字节数）
+SPEEDTEST_URLS = [
+    "https://speed.cloudflare.com/__down?bytes=20000000",  # 20MB
+    "http://cachefly.cachefly.net/20mb.test",
+    "https://proof.ovh.net/files/20Mb.dat",
+]
+
+
+def speed_test(proxy: str, auth: tuple[str, str] | None = None,
+               timeout: float = 60) -> dict:
+    """经代理下载测速。返回 {ok, mbps, bytes, seconds, url, error}。"""
+    handlers = [urllib.request.ProxyHandler(
+        {"http": proxy, "https": proxy})]
+    if auth:
+        pm = urllib.request.ProxyBasicAuthHandler()
+        pm.add_password(None, proxy, auth[0], auth[1])
+        handlers.append(pm)
+    opener = urllib.request.build_opener(*handlers)
+    last_err = ""
+    for url in SPEEDTEST_URLS:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Yu-proxy-speedtest/1.0"})
+            t0 = time.monotonic()
+            with opener.open(req, timeout=timeout) as resp:
+                total = 0
+                # 流式读，边下边计时，避免大文件占内存
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    # 超过 60 秒还没下完就按已下载的算
+                    if time.monotonic() - t0 > timeout:
+                        break
+            secs = time.monotonic() - t0
+            if total < 1024 or secs <= 0:
+                last_err = f"{url} 下载数据过少"
+                continue
+            mbps = (total * 8) / secs / 1_000_000
+            return {"ok": True, "mbps": round(mbps, 1),
+                    "bytes": total, "seconds": round(secs, 1),
+                    "url": url, "error": ""}
+        except Exception as e:
+            last_err = str(e).split("\n")[0][:200]
+            continue
+    return {"ok": False, "mbps": 0, "bytes": 0, "seconds": 0,
+            "url": "", "error": last_err}
+
+
 class HealthChecker:
     """对当前隧道做多层健康检查。"""
 

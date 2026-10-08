@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
-from health import HealthChecker
+from health import HealthChecker, speed_test
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -45,7 +45,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.17"
+VERSION = "1.3.18"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -67,6 +67,9 @@ def default_config() -> dict:
             "prefer_countries": ["JP", "KR", "SG", "TW", "HK"],
             "tcp_only": False,
             "connect_retries": 5,
+        },
+        "speedtest": {
+            "auto_interval_min": 0,
         },
         "watchdog": {
             "enabled": True, "interval": 30,
@@ -329,6 +332,8 @@ class Daemon:
         # 调度状态
         self._exit_ip = ""
         self._last_health: dict | None = None
+        self._last_speed: dict | None = None
+        self._last_speed_at: float = 0
 
         # Kill-switch：阻断非隧道出站
         self.ks = KillSwitch(log=self.log)
@@ -457,6 +462,32 @@ class Daemon:
             self._exit_ip = r["exit_ip"]
         return r
 
+    def _speedtest_loop(self) -> None:
+        """自动测速：按配置间隔测试当前节点的下载速度。"""
+        while True:
+            try:
+                interval = int(self.cfg.get("speedtest", {})
+                               .get("auto_interval_min", 0))
+            except Exception:
+                interval = 0
+            if interval <= 0:
+                time.sleep(60)
+                continue
+            time.sleep(interval * 60)
+            try:
+                if self.controller.is_connected() and not self._paused:
+                    proxy_url, auth = self._proxy_addr
+                    r = speed_test(proxy_url, auth=auth)
+                    self._last_speed = r
+                    self._last_speed_at = time.time()
+                    if r["ok"]:
+                        self.log(f"[speedtest] 自动测速: {r['mbps']} Mbps")
+                        self._event("speedtest",
+                                    f"自动测速: {r['mbps']} Mbps",
+                                    self.controller.current_server_id())
+            except Exception as e:
+                self.log(f"[speedtest] 自动测速失败: {e}")
+
     # ----- 日志 -----
     def _setup_logging(self) -> None:
         log_path = self.data_dir / "app.log"
@@ -508,6 +539,7 @@ class Daemon:
             "update_check": self._hook_update_check,
             "update": self._hook_update,
             "health_check": self._hook_health_check,
+            "speed_test": self._hook_speed_test,
             "blacklist_clear": self._hook_blacklist_clear,
             "log_clear": self._hook_log_clear,
             "config_import": self._hook_config_import,
@@ -541,6 +573,8 @@ class Daemon:
             },
             "exit_ip": self._exit_ip,
             "health": self._last_health,
+            "last_speed": self._last_speed,
+            "last_speed_at": self._last_speed_at,
             "killswitch": {
                 "enabled": bool(self.cfg["killswitch"].get("enabled")),
                 "active": self.ks.active,
@@ -935,6 +969,21 @@ class Daemon:
             return {"ok": False, "error": "VPN 未连接"}
         r = self._health_check()
         return {"ok": True, "health": r, "exit_ip": self._exit_ip}
+
+    def _hook_speed_test(self) -> dict:
+        """手动测速：测试当前连接节点的下载速度。"""
+        if not self.controller.is_connected():
+            return {"ok": False, "error": "VPN 未连接"}
+        proxy_url, auth = self._proxy_addr
+        r = speed_test(proxy_url, auth=auth)
+        self._last_speed = r
+        self._last_speed_at = time.time()
+        if r["ok"]:
+            self._event("speedtest",
+                        f"测速完成: {r['mbps']} Mbps "
+                        f"({r['bytes'] // 1024 // 1024}MB/{r['seconds']}s)",
+                        self.controller.current_server_id())
+        return {"ok": True, "speed": r}
 
     # ---------- 黑名单 / 日志 / 配置 ----------
 
@@ -1342,6 +1391,10 @@ class Daemon:
 
         # Kill-switch（按配置启用）
         self._ks_ensure()
+
+        # 自动测速线程
+        threading.Thread(target=self._speedtest_loop, daemon=True,
+                         name="speedtest-auto").start()
 
         # 开机自动连接
         if self.cfg["vpn"].get("autoconnect", True):
