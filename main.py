@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.63"
+VERSION = "1.3.64"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1138,9 +1138,28 @@ class Daemon:
                 if not n.get("id") or not n.get("config_b64"):
                     continue
                 if n["id"] not in by_id:
-                    # 补齐本地字段
+                    # 规范化为本地完整字段（缺字段会导致 /api/servers 500）
+                    try:
+                        n["port"] = int(n.get("port") or 1194)
+                    except (TypeError, ValueError):
+                        n["port"] = 1194
+                    n["proto"] = (n.get("proto") or "udp").lower()
+                    n["country"] = n.get("country") or ""
+                    n["country_short"] = (
+                        n.get("country_short") or n.get("country") or "").upper()
+                    n["country_zh"] = n.get("country_zh") or ""
+                    for _k in ("ping", "ping_ms", "score", "speed_bps"):
+                        try:
+                            n[_k] = int(n.get(_k) or 0)
+                        except (TypeError, ValueError):
+                            n[_k] = 0
+                    n["ping"] = n["ping"] or n["ping_ms"]
+                    n["sessions"] = 0
+                    n["uptime_s"] = 0
                     n["probe_status"] = "unknown"
                     n["last_probe"] = 0
+                    n["last_probe_ok"] = 0
+                    n["from_pool"] = True
                     by_id[n["id"]] = n
                     added += 1
             if added:
