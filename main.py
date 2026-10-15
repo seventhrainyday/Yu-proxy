@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.58"
+VERSION = "1.3.59"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -949,24 +949,66 @@ class Daemon:
                 "error": f"无法连接更新源: {last_err}"}
 
     def _hook_update(self) -> dict:
-        """一键更新：后台脱离进程重跑一键安装脚本，完成后服务自动重启。"""
+        """一键更新：后台脱离进程重跑一键安装脚本，完成后服务自动重启。
+        下载策略：直连优先（兼容无 VPN/无代理场景），直连失败且 VPN
+        在线则走本地代理（killswitch 下直连会被拦）。下载后校验非空
+        且为 shell 脚本，避免空下载假成功。"""
         def _run():
-            import subprocess
+            import subprocess, os
             # 等 API 响应返回后再开始，避免连接被提前掐断
             time.sleep(2)
             try:
                 urls = " ".join(self.UPDATE_URLS)
+                log_path = str(self.data_dir / "update.log")
+                proxy_url, proxy_auth = self._proxy_addr
+                vpn_up = False
+                try:
+                    vpn_up = bool(self.controller.is_connected())
+                except Exception:
+                    pass
+                # 代理兜底仅在无认证时可用（密码已哈希，curl 无法还原）
+                use_proxy = vpn_up and not proxy_auth
+                env = dict(os.environ)
+                if use_proxy:
+                    # 整个安装链（含脚本内再下载）都走代理
+                    env["http_proxy"] = proxy_url
+                    env["https_proxy"] = proxy_url
+                script = (
+                    "tmp=$(mktemp); ok=\"\"; "
+                    "command -v curl >/dev/null || "
+                    "{ echo \"[update] 未找到 curl，请先 apt install curl\"; "
+                    "exit 1; }; "
+                    f"for u in {urls}; do "
+                    "echo \"[update] 尝试 $u\"; "
+                    # 直连优先
+                    "if curl -sSL --max-time 60 -o \"$tmp\" \"$u\" "
+                    "&& [ -s \"$tmp\" ] "
+                    "&& head -c 2 \"$tmp\" | grep -q '#!'; then ok=1; "
+                    # 直连失败 → 代理重试
+                    f"elif [ \"{int(use_proxy)}\" = \"1\" ] && "
+                    f"curl -sSL --max-time 60 -x {proxy_url} "
+                    "-o \"$tmp\" \"$u\" "
+                    "&& [ -s \"$tmp\" ] "
+                    "&& head -c 2 \"$tmp\" | grep -q '#!'; then "
+                    "echo \"[update] 经代理下载成功\"; ok=1; "
+                    "else echo \"[update] $u 下载失败，试下一个\"; fi; "
+                    "if [ -n \"$ok\" ]; then break; fi; "
+                    "done; "
+                    "if [ -z \"$ok\" ]; then "
+                    "echo \"[update] 全部源下载失败\"; rm -f \"$tmp\"; exit 1; fi; "
+                    "echo \"[update] 开始安装\"; "
+                    "bash \"$tmp\"; ec=$?; rm -f \"$tmp\"; exit $ec"
+                    f" >>{log_path} 2>&1"
+                )
                 subprocess.Popen(
-                    ["bash", "-c",
-                     f"sleep 1; for u in {urls}; do "
-                     f"echo \"[update] 尝试 $u\"; "
-                     f"bash <(curl -sSL --max-time 60 $u) && break; "
-                     f"echo \"[update] $u 失败，试下一个\"; done"
-                     f" >>/var/lib/Yu-proxy/update.log 2>&1"],
+                    ["bash", "-c", script],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    start_new_session=True)
+                    start_new_session=True,
+                    env=env)
+                self.log(f"[update] 更新进程已启动（vpn_up={vpn_up}, "
+                         f"proxy_fallback={use_proxy}）")
             except Exception as e:
                 self.log(f"[update] 启动更新失败: {e}")
         threading.Thread(target=_run, daemon=True).start()
