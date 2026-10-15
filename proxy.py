@@ -84,21 +84,16 @@ def _parse_dns_a(resp: bytes, tx_id: int) -> str | None:
     return None
 
 
-def dns_via_tun(host: str, device: str, dns_server: str = "8.8.8.8",
-                timeout: float = 3.0) -> str | None:
-    """经 tun 设备向指定 DNS 服务器查 A 记录。"""
-    try:
-        socket.inet_aton(host)
-        return host  # 已经是 IP
-    except OSError:
-        pass
-    tx_id = random.getrandbits(16)
+def _dns_via_tun_udp(host: str, device: str, dns_server: str,
+                   tx_id: int, timeout: float,
+                   port: int = 53) -> str | None:
+    """UDP 53 查询。"""
     sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         _bind_device(sock, device)
-        sock.sendto(_build_dns_query(host, tx_id), (dns_server, 53))
+        sock.sendto(_build_dns_query(host, tx_id), (dns_server, port))
         resp, _ = sock.recvfrom(512)
         return _parse_dns_a(resp, tx_id)
     except OSError:
@@ -109,6 +104,51 @@ def dns_via_tun(host: str, device: str, dns_server: str = "8.8.8.8",
                 sock.close()
             except Exception:
                 pass
+
+
+def _dns_via_tun_tcp(host: str, device: str, dns_server: str,
+                   tx_id: int, timeout: float,
+                   port: int = 53) -> str | None:
+    """DNS over TCP（RFC 7766）：部分节点只拦 UDP 53，TCP 53 往往放行。
+    报文前加 2 字节长度前缀，响应同理。"""
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        _bind_device(sock, device)
+        sock.connect((dns_server, port))
+        query = _build_dns_query(host, tx_id)
+        sock.sendall(len(query).to_bytes(2, "big") + query)
+        hdr = _recv_exact(sock, 2)
+        length = int.from_bytes(hdr, "big")
+        if length <= 0 or length > 4096:
+            return None
+        resp = _recv_exact(sock, length)
+        return _parse_dns_a(resp, tx_id)
+    except (OSError, ConnectionError):
+        return None
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def dns_via_tun(host: str, device: str, dns_server: str = "8.8.8.8",
+                timeout: float = 3.0, port: int = 53) -> str | None:
+    """经 tun 设备向指定 DNS 服务器查 A 记录。
+    UDP 优先，失败自动降级 TCP（应对只拦 UDP 53 的节点）。"""
+    try:
+        socket.inet_aton(host)
+        return host  # 已经是 IP
+    except OSError:
+        pass
+    tx_id = random.getrandbits(16)
+    ip = _dns_via_tun_udp(host, device, dns_server, tx_id, timeout, port)
+    if ip:
+        return ip
+    return _dns_via_tun_tcp(host, device, dns_server, tx_id, timeout, port)
 
 
 def resolve(host: str, device: str | None,
