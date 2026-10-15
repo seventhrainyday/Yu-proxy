@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import random
 import secrets
+from passwd import verify_password
 import select
 import socket
 import struct
@@ -265,7 +266,7 @@ def handle_http(client: socket.socket, first: bytes, ctx: "ProxyContext") -> Non
         if ctx.auth:
             user, pwd = _parse_basic_auth(lines[1:])
             if not (user and secrets.compare_digest(user, ctx.auth[0])
-                    and secrets.compare_digest(pwd, ctx.auth[1])):
+                    and verify_password(pwd, ctx.auth[1])):
                 client.sendall(b"HTTP/1.1 407 Proxy Authentication Required\r\n"
                                b"Proxy-Authenticate: Basic realm=\"Yu-proxy\"\r\n"
                                b"Content-Length: 0\r\n\r\n")
@@ -364,7 +365,7 @@ def handle_socks5(client: socket.socket, ctx: "ProxyContext") -> None:
             plen = _recv_exact(client, 1)[0]
             pwd = _recv_exact(client, plen).decode("utf-8", "replace")
             if not (secrets.compare_digest(user, ctx.auth[0])
-                    and secrets.compare_digest(pwd, ctx.auth[1])):
+                    and verify_password(pwd, ctx.auth[1])):
                 client.sendall(b"\x01\x01")
                 return
             client.sendall(b"\x01\x00")

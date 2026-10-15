@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from passwd import verify_password, is_hashed
 import threading
 import time
 import urllib.parse
@@ -1138,7 +1139,7 @@ const SETTINGS = {
   'net-proxy': [['proxy.bind','监听地址（127.0.0.1=仅本机，0.0.0.0=所有网卡）','text'],
     ['proxy.port','监听端口','number'],
     ['proxy.user','代理账号（空=不鉴权）','text'],
-    ['proxy.pass','代理密码','password'],
+    ['proxy.pass','代理密码（不修改请留空；清空账号可关闭认证）','password'],
     ['proxy.dns_server','隧道 DNS（防泄漏：经隧道解析）','text'],
     ['proxy.allow_direct_fallback','VPN 断开时直连兜底（默认关闭更安全）','checkbox'],
     ['proxy.allow_ips','来源 IP 白名单（逗号分隔，空=不限）','text']],
@@ -1146,7 +1147,7 @@ const SETTINGS = {
   'sec-panel': [['panel.bind','监听地址','text'],
     ['panel.port','监听端口','number'],
     ['panel.user','登录用户名（空=不启用登录）','text'],
-    ['panel.pass','登录密码','password'],
+    ['panel.pass','登录密码（不修改请留空）','password'],
     ['panel.pass2','确认密码（修改时填写）','password']],
   'notify': [['notify.telegram.enabled','Telegram 启用','checkbox'],
     ['notify.telegram.bot_token','Telegram Bot Token','text'],
@@ -1505,8 +1506,14 @@ class PanelHandler(BaseHTTPRequestHandler):
         return None
 
     def _authed(self) -> bool:
-        # 仅认登录会话 cookie（token 鉴权已取消，统一走账号密码登录）
-        return self.panel_server.valid_session(self._session_id())
+        # 登录会话 cookie，或 CLI 本地 token（root 专有文件）
+        if self.panel_server.valid_session(self._session_id()):
+            return True
+        auth = (self.headers.get("Authorization") or "").strip()
+        tok = self.panel_server.cli_token
+        if tok and auth.startswith("Bearer "):
+            return secrets.compare_digest(auth[7:].strip(), tok)
+        return False
 
     def _send(self, code: int, body: bytes,
               ctype: str = "application/json",
@@ -1525,6 +1532,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode())
 
     def _read_json(self) -> dict:
+        # 只接受 JSON 请求，挡掉跨站表单/CSRF 试探
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if ctype and ctype != "application/json":
+            return {}
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -1655,11 +1666,24 @@ class PanelHandler(BaseHTTPRequestHandler):
 
         # 登录提交（表单）
         if path == "/login":
+            ip = self.client_address[0] if self.client_address else ""
+            if ref._login_blocked(ip):
+                self._send(429, b"Too many attempts, try later",
+                           "text/plain")
+                return
             form = self._read_form()
             user = form.get("username", "")
             pwd = form.get("password", "")
             if user == ref.panel_user and \
-                    secrets.compare_digest(pwd, ref.panel_pass):
+                    verify_password(pwd, ref.panel_pass):
+                ref._login_ok(ip)
+                # 明文迁移：首次登录后升级为哈希存储
+                # (upgrade hook 内已调 apply_auth 更新 ref.panel_pass)
+                if not is_hashed(ref.panel_pass):
+                    try:
+                        self.hooks["upgrade_panel_pass"](pwd)
+                    except Exception:
+                        pass
                 sid = ref.create_session()
                 self.send_response(302)
                 self.send_header(
@@ -1671,6 +1695,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             else:
+                ref._login_failed(ip)
+                # 失败也 sleep 一下，拖慢爆破
+                time.sleep(1)
                 self._redirect("/login?e=1")
             return
 
@@ -1755,7 +1782,7 @@ class PanelServer:
     def __init__(self, bind: str, port: int,
                  hooks: dict[str, Callable], log=print,
                  panel_user: str = "admin", panel_pass: str = "admin",
-                 secret_path: str = ""):
+                 secret_path: str = "", cli_token: str | None = None):
         self.bind = bind
         self.port = port
         self.hooks = hooks
@@ -1763,8 +1790,11 @@ class PanelServer:
         self.panel_user = panel_user
         self.panel_pass = panel_pass
         self.secret_path = secret_path.strip("/ ")
+        self.cli_token = cli_token
         self._sessions: dict[str, float] = {}
         self._sess_lock = threading.Lock()
+        self._login_fails: dict[str, list[float]] = {}
+        self._login_lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._handler_cls = None
@@ -1778,6 +1808,22 @@ class PanelServer:
         with self._sess_lock:
             self._sessions[sid] = time.time() + self.SESSION_TTL
         return sid
+
+    def _login_blocked(self, ip: str) -> bool:
+        """5 分钟内失败 5 次则封 10 分钟。"""
+        now = time.time()
+        with self._login_lock:
+            ts = [t for t in self._login_fails.get(ip, []) if now - t < 300]
+            self._login_fails[ip] = ts
+            return len(ts) >= 5
+
+    def _login_failed(self, ip: str) -> None:
+        with self._login_lock:
+            self._login_fails.setdefault(ip, []).append(time.time())
+
+    def _login_ok(self, ip: str) -> None:
+        with self._login_lock:
+            self._login_fails.pop(ip, None)
 
     def valid_session(self, sid: str | None) -> bool:
         if not sid:

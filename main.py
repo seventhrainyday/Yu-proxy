@@ -21,6 +21,7 @@ import base64
 import json
 import logging
 import os
+import secrets
 import re
 import signal
 import sys
@@ -36,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vpngate
 from health import HealthChecker, speed_test, speed_test_iface, speed_test_ookla, simple_speed_test
 from pool import upload_nodes, download_nodes, pool_stats
+from passwd import hash_password, verify_password, is_hashed
 import ipquality
 from killswitch import KillSwitch
 from nodestore import NodeStore
@@ -46,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.56"
+VERSION = "1.3.57"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -296,6 +298,11 @@ class Daemon:
         self.config_path = config_path
         self.data_dir = Path(cfg["data_dir"])
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # CLI 本地鉴权 token：daemon 每次启动刷新，600 权限仅 root 可读
+        self.cli_token = secrets.token_urlsafe(32)
+        _tp = self.data_dir / "cli_token"
+        _tp.write_text(self.cli_token, encoding="utf-8")
+        os.chmod(_tp, 0o600)
         self._setup_logging()
 
         vpn_cfg = cfg["vpn"]
@@ -310,7 +317,8 @@ class Daemon:
             self._hooks(), log=self.log,
             panel_user=panel_cfg.get("user", "admin"),
             panel_pass=panel_cfg.get("pass", "admin"),
-            secret_path=panel_cfg.get("secret_path", ""))
+            secret_path=panel_cfg.get("secret_path", ""),
+            cli_token=self.cli_token)
 
         self._paused = False
         self._want_connected = bool(self.cfg["vpn"].get("autoconnect", True))
@@ -518,6 +526,7 @@ class Daemon:
             "pool_stats": self._hook_pool_stats,
             "pool_upload": self._hook_pool_upload,
             "restart": self._hook_restart,
+            "upgrade_panel_pass": self._hook_upgrade_panel_pass,
             "blacklist_clear": self._hook_blacklist_clear,
             "log_clear": self._hook_log_clear,
             "config_import": self._hook_config_import,
@@ -1151,6 +1160,24 @@ class Daemon:
         # 手动触发上传（忽略节流）
         return self._pool_upload_working(_skip_throttle=True)
 
+    def _hook_upgrade_panel_pass(self, plaintext: str) -> dict:
+        """登录时发现面板密码仍是明文存储，升级为哈希（一次性迁移）。"""
+        try:
+            if not isinstance(plaintext, str) or not plaintext:
+                return {"ok": False}
+            if is_hashed(self.cfg["panel"].get("pass", "")):
+                return {"ok": True, "already": True}
+            self.cfg["panel"]["pass"] = hash_password(plaintext)
+            save_config_file(self.config_path, self.cfg)
+            p = self.cfg["panel"]
+            self.panel.apply_auth(p.get("user", "admin"),
+                                  p.get("pass", ""),
+                                  p.get("secret_path", ""))
+            self.log("[api] 面板密码已从明文升级为哈希存储")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
+
     def _hook_restart(self) -> dict:
         """重启服务：跨平台，命令完全脱离父进程。"""
         def _run():
@@ -1320,8 +1347,34 @@ class Daemon:
                 pass
         return lines[-n:]
 
+    # 账号密码字段：读取时脱敏，保存时空=保持原值、非空=哈希存储
+    _SECRET_FIELDS = (("panel", "pass"), ("proxy", "pass"))
+
     def _hook_get_config(self) -> dict:
-        return {"ok": True, "config": self.cfg}
+        cfg = json.loads(json.dumps(self.cfg))
+        for sec, key in self._SECRET_FIELDS:
+            try:
+                if cfg[sec].get(key):
+                    cfg[sec][key] = ""
+            except (KeyError, TypeError, AttributeError):
+                pass
+        return {"ok": True, "config": cfg}
+
+    def _hash_secret_fields(self, new_cfg: dict) -> None:
+        """保存前处理密码字段：空=删键（保留旧值），明文=哈希。原地修改。"""
+        for sec, key in self._SECRET_FIELDS:
+            try:
+                node = new_cfg[sec]
+            except (KeyError, TypeError):
+                continue
+            if key not in node:
+                continue
+            v = node[key]
+            if not v:  # 空字符串/None：删键，合并时保留旧值
+                del node[key]
+            elif not is_hashed(v):
+                node[key] = hash_password(v)
+            # 已是哈希格式：原样保留（防御性）
 
     def _hook_save_config(self, body: dict) -> dict:
         new_cfg = body.get("config")
@@ -1335,6 +1388,8 @@ class Daemon:
                     c.strip().upper() for c in pc.split(",") if c.strip()]
         except (KeyError, TypeError):
             pass
+        # 密码字段：空=保留旧值，明文=哈希后存储
+        self._hash_secret_fields(new_cfg)
         # 深合并：只覆盖提交的键，保留其他
         merged = json.loads(json.dumps(self.cfg))
         _deep_merge(merged, new_cfg)
@@ -1548,8 +1603,20 @@ class Daemon:
 
 # ---------------- CLI（经面板 API） ----------------
 
+def _api_headers(cfg: dict) -> dict:
+    """CLI 鉴权头：读 daemon 生成的 root 专有 token；缺失时回退密码登录。"""
+    data_dir = cfg.get("data_dir", "/var/lib/Yu-proxy")
+    try:
+        tok = Path(data_dir, "cli_token").read_text(encoding="utf-8").strip()
+        if tok:
+            return {"Authorization": f"Bearer {tok}"}
+    except OSError:
+        pass
+    return {"Cookie": _api_session(cfg)}
+
+
 def _api_session(cfg: dict) -> str:
-    """CLI 用面板账号密码登录，返回会话 cookie。"""
+    """CLI 用面板账号密码登录，返回会话 cookie（兼容老版本）。"""
     panel = cfg["panel"]
     form = urllib.parse.urlencode(
         {"username": panel.get("user", "admin"),
@@ -1584,7 +1651,7 @@ def _api_call(cfg: dict, path: str, method: str = "GET",
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
         url, data=data, method=method,
-        headers={"Cookie": _api_session(cfg),
+        headers={**_api_headers(cfg),
                  "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=70) as resp:
         return json.loads(resp.read().decode("utf-8"))
