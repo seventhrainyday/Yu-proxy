@@ -316,7 +316,8 @@ button{font-family:inherit}
         <div class="note" id="pool-info" style="margin-top:8px">
           <span id="pool-stats">公共节点池：未启用</span>
           <button class="btn" style="margin-left:8px" onclick="poolUpload()">⬆ 上传节点</button>
-          <button class="btn" style="margin-left:4px" onclick="loadPoolStats()">🔄</button>
+          <button class="btn" style="margin-left:4px" onclick="poolDownload()">⬇ 拉取节点</button>
+          <button class="btn" style="margin-left:4px" title="刷新池子统计" onclick="loadPoolStats(true)">🔄</button>
         </div>
       </div>
       <div class="card">
@@ -575,7 +576,7 @@ document.getElementById('chart-seg').addEventListener('click', e => {
   document.querySelectorAll('#chart-seg button').forEach(x => x.classList.toggle('active', x === b));
   drawChart();
 });
-async function loadPoolStats() {
+async function loadPoolStats(showToast) {
   try {
     const r = await api('/api/pool_stats', 'GET');
     const el = document.getElementById('pool-stats');
@@ -586,8 +587,10 @@ async function loadPoolStats() {
     } else {
       el.textContent = '公共节点池：' + (r.error || '不可用');
     }
+    if (showToast) toast('池子统计已刷新', 'ok');
   } catch(e) {
     document.getElementById('pool-stats').textContent = '公共节点池：连接失败';
+    if (showToast) toast('刷新失败', 'err');
   }
 }
 async function restartService() {
@@ -617,6 +620,21 @@ async function poolUpload() {
     }
   } catch(e) { toast('上传失败：' + e.message, 'err'); }
   btn.disabled = false; btn.innerHTML = '⬆ 上传节点';
+}
+async function poolDownload() {
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '拉取中…';
+  try {
+    const r = await api('/api/pool_download', 'POST', {});
+    if (r.ok) {
+      toast(`从池子拉取成功：新增 ${r.added || 0} 个，本地共 ${r.total || 0} 个`, 'ok');
+      loadPoolStats();
+      if (typeof loadNodes === 'function') loadNodes();
+    } else {
+      toast('拉取失败：' + (r.error || ''), 'err');
+    }
+  } catch(e) { toast('拉取失败：' + e.message, 'err'); }
+  btn.disabled = false; btn.innerHTML = '⬇ 拉取节点';
 }
 async function runSpeedTest() {
   const btn = document.getElementById('btn-speedtest');
@@ -1743,6 +1761,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._json(self.hooks["speed_test"]())
             elif path == "/api/pool_upload":
                 self._json(self.hooks["pool_upload"]())
+            elif path == "/api/pool_download":
+                self._json(self.hooks["pool_download"]())
             elif path == "/api/restart":
                 self._json(self.hooks["restart"]())
             elif path == "/api/custom_add":

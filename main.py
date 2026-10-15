@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.62"
+VERSION = "1.3.63"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -525,6 +525,7 @@ class Daemon:
             "speed_test": self._hook_speed_test,
             "pool_stats": self._hook_pool_stats,
             "pool_upload": self._hook_pool_upload,
+            "pool_download": self._hook_pool_download,
             "restart": self._hook_restart,
             "upgrade_panel_pass": self._hook_upgrade_panel_pass,
             "blacklist_clear": self._hook_blacklist_clear,
@@ -1197,6 +1198,19 @@ class Daemon:
             return r
         except Exception as e:
             return {"ok": False, "error": str(e)[:200], "enabled": True}
+
+    def _hook_pool_download(self) -> dict:
+        """手动从公共池拉取节点并合并。"""
+        try:
+            pcfg = self.cfg.get("pool", {})
+            if not pcfg.get("enabled"):
+                return {"ok": False, "error": "公共池未启用，去基础调度里打开"}
+            n = self._pool_download_merge()
+            servers, _ = vpngate.load_cache(self.data_dir)
+            self.log(f"[api] 手动从公共池拉取：新增 {n} 个，本地共 {len(servers)} 个")
+            return {"ok": True, "added": n, "total": len(servers)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}
 
     def _hook_pool_upload(self) -> dict:
         # 手动触发上传（忽略节流）
