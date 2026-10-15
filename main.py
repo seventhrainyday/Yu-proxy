@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.60"
+VERSION = "1.3.61"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1143,7 +1143,7 @@ class Daemon:
                     by_id[n["id"]] = n
                     added += 1
             if added:
-                vpngate.save_cache(self.data_dir, list(by_id.values()))
+                vpngate.save_cache(list(by_id.values()), self.data_dir)
             return added
         except Exception as e:
             self.log(f"[pool] 下载合并失败: {e}")
@@ -1267,6 +1267,10 @@ class Daemon:
             try:
                 servers = vpngate.refresh(
                     self.data_dir, self.cfg["vpngate"]["api_urls"])
+                pool_n = self._pool_download_merge()
+                if pool_n:
+                    servers, _ = vpngate.load_cache(self.data_dir)
+                    self.log(f"[pick] 缓存为空，已从公共池补充 {pool_n} 个节点")
             except Exception:
                 return None
         vpn_cfg = self.cfg["vpn"]
@@ -1558,9 +1562,12 @@ class Daemon:
                 try:
                     servers = vpngate.refresh(
                         self.data_dir, self.cfg["vpngate"]["api_urls"])
-                    self.log(f"[refetch] 节点列表已更新，共 {len(servers)} 个")
+                    pool_n = self._pool_download_merge()
+                    self.log(f"[refetch] 节点列表已更新，共 {len(servers)} 个"
+                             f"（公共池 +{pool_n}）")
                     self._event("refresh",
-                                f"节点列表已更新，共 {len(servers)} 个")
+                                f"节点列表已更新，共 {len(servers)} 个"
+                                f"（公共池 +{pool_n}）")
                     # 拉取后立即批量验证有效性（后台线程，不阻塞）
                     threading.Thread(
                         target=self._run_probe_batch, daemon=True,
