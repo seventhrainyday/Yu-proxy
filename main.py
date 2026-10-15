@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.61"
+VERSION = "1.3.62"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -960,7 +960,7 @@ class Daemon:
             try:
                 urls = " ".join(self.UPDATE_URLS)
                 log_path = str(self.data_dir / "update.log")
-                proxy_url, proxy_auth = self._proxy_addr
+                proxy_url, proxy_auth = self._proxy_addr()
                 vpn_up = False
                 try:
                     vpn_up = bool(self.controller.is_connected())
