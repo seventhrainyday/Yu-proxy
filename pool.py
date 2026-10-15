@@ -91,6 +91,24 @@ def download_nodes(api_base: str, country: str = "", limit: int = 200,
         return {"ok": False, "nodes": [], "error": str(e)[:200]}
 
 
+def send_votes(api_base: str, device_id: str,
+             votes: dict[str, bool], timeout: int = 15) -> dict:
+    """上报节点存活投票。votes: {node_id: True成功/False失败}。"""
+    api_base = (api_base or "").rstrip("/")
+    if not api_base or not votes:
+        return {"ok": False, "error": "empty"}
+    payload = {"votes": [{"id": nid, "ok": bool(ok)}
+                         for nid, ok in list(votes.items())[:200]]}
+    if device_id:
+        payload["device_id"] = device_id
+    try:
+        r = _post_json(f"{api_base}/vote.php", payload, timeout)
+        return {"ok": bool(r.get("ok")), "counted": r.get("counted", 0),
+                "error": r.get("error", "")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def pool_stats(api_base: str, timeout: int = 15) -> dict:
     """池子统计。"""
     api_base = (api_base or "").rstrip("/")

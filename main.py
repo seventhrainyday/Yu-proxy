@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vpngate
 from health import HealthChecker, speed_test, speed_test_iface, speed_test_ookla, simple_speed_test
-from pool import upload_nodes, download_nodes, pool_stats
+from pool import upload_nodes, download_nodes, pool_stats, send_votes
 from passwd import hash_password, verify_password, is_hashed
 import ipquality
 from killswitch import KillSwitch
@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.66"
+VERSION = "1.3.67"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -607,7 +607,8 @@ class Daemon:
                     "success_rate": st["success_rate"],
                     "blacklisted": st["blacklisted"],
                     "blacklist_reason": st["blacklist_reason"],
-                    "last_probe": s.get("last_probe") or 0,
+                    "avail_24h": s.get("avail_24h"),
+                "last_probe": s.get("last_probe") or 0,
                     "last_probe_ok": s.get("last_probe_ok") or 0,
                     "first_seen": s.get("first_seen") or 0,
                     "ip_quality": self._ip_quality_of(s.get("ip", "")),
@@ -1139,6 +1140,21 @@ class Daemon:
             self.log(f"[pool] 已自动生成设备标识: {did}")
         return did
 
+    def _pool_vote(self, node_id: str, ok: bool) -> None:
+        """向公共池上报节点存活投票（异步，不阻塞连接流程）。"""
+        def _run():
+            try:
+                pcfg = self.cfg.get("pool", {})
+                if not pcfg.get("enabled"):
+                    return
+                api_base = (pcfg.get("api_base") or "").strip()
+                if not api_base or not node_id:
+                    return
+                send_votes(api_base, self._pool_device_id(), {node_id: ok})
+            except Exception:
+                pass
+        threading.Thread(target=_run, daemon=True, name="pool-vote").start()
+
     def _pool_download_merge(self) -> int:
         """从公共池下载节点并合并到本地缓存。返回新增数量。"""
         try:
@@ -1387,10 +1403,12 @@ class Daemon:
                         threading.Thread(
                             target=self._health_check, daemon=True,
                             name="health-init").start()
+                        self._pool_vote(cand["id"], True)
                         return
                     except Exception as e:
                         last_err = _summarize_error(e)
                         self.store.record_fail(cand["id"])
+                        self._pool_vote(cand["id"], False)
                         # 连接失败的节点临时拉黑 30 分钟，别马上又选回来
                         self.store.temp_blacklist(cand["id"], 1800)
                         self._event("fail",
