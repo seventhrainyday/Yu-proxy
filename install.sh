@@ -98,7 +98,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   mkdir -p /etc/systemd/system
   cp "$SRC_DIR/Yu-proxy.service" /etc/systemd/system/Yu-proxy.service
   systemctl daemon-reload
-  systemctl enable --now Yu-proxy.service
+  systemctl enable Yu-proxy.service
 elif command -v rc-update >/dev/null 2>&1; then
   INIT="openrc"
   cp "$SRC_DIR/Yu-proxy.openrc" /etc/init.d/Yu-proxy
@@ -115,7 +115,16 @@ cp "$SRC_DIR/yu" /usr/local/bin/yu
 chmod +x /usr/local/bin/yu
 echo "已安装 yu 命令：yu status|restart|log|update|version"
 
-echo "[5/5] 启动完成，等待服务就绪…"
+echo "[5/5] 重启服务以加载新版本…"
+# --no-block：systemd 下排队后立即返回，避免更新进程被 cgroup 连带杀死；
+# restart 对未运行的服务等同于 start，覆盖全新安装场景
+if [ "$INIT" = "systemd" ]; then
+  systemctl --no-block restart Yu-proxy.service
+elif [ "$INIT" = "openrc" ]; then
+  rc-service Yu-proxy restart
+else
+  echo "未注册系统服务，跳过重启。"
+fi
 sleep 3
 if [ "$INIT" = "systemd" ]; then
   systemctl --no-pager --lines=5 status Yu-proxy.service || true
