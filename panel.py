@@ -1134,7 +1134,8 @@ const SETTINGS = {
     ['vpn.connect_retries','连接失败时最多试几个节点','number'],
     ['pool.enabled','启用公共节点池（上传/下载可用节点）','checkbox'],
     ['pool.api_base','公共节点池 API 地址','text'],
-    ['pool.upload_interval_h','节点上传间隔（小时）','number']],
+    ['pool.upload_interval_h','节点上传间隔（小时）','number'],
+    ['pool.device_id','设备标识（安装时自动生成，可修改，用于池子区分设备）','text','regen-device']],
   'sched-filter': [['filter.countries_allow','国家白名单（只用这些国家的节点，空=不限）','countrypick'],
     ['filter.countries_block','国家黑名单（不用这些国家的节点）','countrypick'],
     ['filter.skip_unavailable','只连接探测可用的节点（跳过探测失败的）','checkbox'],
@@ -1235,7 +1236,8 @@ async function openSettingsPage(page) {
           '<span class="note">暂无节点数据</span> <button class="btn mini" onclick="reloadCountries()">加载国家列表</button>') + `</div>`;
       } else {
         input = `<input id="${id}" type="${type}" value="${esc(v == null ? '' : v)}">` +
-          (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button><div class="fld-hint" id="secret-url-hint"></div>` : '');
+          (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button><div class="fld-hint" id="secret-url-hint"></div>` : '') +
+          (extra === 'regen-device' ? ` <button class="btn mini" onclick="regenDevice()">重新生成</button>` : '');
       }
       return `<div class="f-row"><label>${label}</label>${input}</div>`;
     }).join('');
@@ -1276,6 +1278,14 @@ function regenSecret() {
   for (let i = 0; i < 16; i++) s += chars[arr[i] % chars.length];
   document.getElementById(fieldId('panel.secret_path')).value = s;
   updateSecretHint();
+}
+function regenDevice() {
+  const chars = 'abcdef0123456789';
+  let s = '';
+  const arr = new Uint8Array(12); crypto.getRandomValues(arr);
+  for (let i = 0; i < 12; i++) s += chars[arr[i] % chars.length];
+  document.getElementById(fieldId('pool.device_id')).value = s;
+  toast('已生成新设备标识，记得点保存', 'ok');
 }
 async function saveSettingsPage(page) {
   const card = document.querySelector(`.settings-form[data-sp="${page}"]`).closest('.card');

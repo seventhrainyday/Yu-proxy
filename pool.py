@@ -34,7 +34,7 @@ def _get_json(url: str, timeout: int = 20) -> dict:
 
 
 def upload_nodes(api_base: str, nodes: list[dict[str, Any]],
-                 timeout: int = 20) -> dict:
+                 device_id: str = "", timeout: int = 20) -> dict:
     """上传可用节点到公共池。返回 {ok, added, updated, skipped, error}。"""
     api_base = (api_base or "").rstrip("/")
     if not api_base:
@@ -57,7 +57,10 @@ def upload_nodes(api_base: str, nodes: list[dict[str, Any]],
             "config_b64": n.get("config_b64", ""),
         })
     try:
-        r = _post_json(f"{api_base}/upload.php", {"nodes": slim}, timeout)
+        payload = {"nodes": slim}
+        if device_id:
+            payload["device_id"] = device_id
+        r = _post_json(f"{api_base}/upload.php", payload, timeout)
         return {"ok": bool(r.get("ok")), "added": r.get("added", 0),
                 "updated": r.get("updated", 0), "skipped": r.get("skipped", 0),
                 "error": r.get("error", "")}

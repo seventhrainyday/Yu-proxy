@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.65"
+VERSION = "1.3.66"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -85,6 +85,7 @@ def default_config() -> dict:
             "enabled": False,
             "api_base": "https://yu-proxy.2929.de/api",
             "upload_interval_h": 6,
+            "device_id": "",
         },
         "probe": {
             "threads": 20,
@@ -1126,6 +1127,18 @@ class Daemon:
             self.log(f"[api] 刷新节点失败: {e}")
             return {"ok": False, "error": str(e)}
 
+    def _pool_device_id(self) -> str:
+        """设备标识：安装后首次使用自动生成，可在设置页修改。"""
+        pcfg = self.cfg.get("pool", {})
+        did = (pcfg.get("device_id") or "").strip()
+        if not did:
+            did = secrets.token_hex(6)  # 12 位 hex
+            pcfg["device_id"] = did
+            self.cfg["pool"] = pcfg
+            save_config_file(self.config_path, self.cfg)
+            self.log(f"[pool] 已自动生成设备标识: {did}")
+        return did
+
     def _pool_download_merge(self) -> int:
         """从公共池下载节点并合并到本地缓存。返回新增数量。"""
         try:
@@ -1201,8 +1214,8 @@ class Daemon:
             if not working:
                 return {"ok": True, "added": 0, "updated": 0,
                         "error": "没有可用节点（先等探测完成）"}
-            # 同步上传，拿真实结果
-            r = upload_nodes(api_base, working)
+            # 同步上传，拿真实结果（带设备标识）
+            r = upload_nodes(api_base, working, device_id=self._pool_device_id())
             if r.get("ok"):
                 self._pool_last_upload = time.time()
                 self.log(f"[pool] 上传 {len(working)} 个节点: added={r.get('added')} updated={r.get('updated')}")
