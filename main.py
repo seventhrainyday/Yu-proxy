@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.64"
+VERSION = "1.3.65"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -586,29 +586,37 @@ class Daemon:
         ordered = vpngate.sort_servers(
             servers, vpn_cfg.get("prefer_countries"), vpn_cfg.get("tcp_only"))
         out = []
+        skipped = 0
         for s in ordered:
-            st = self.store.stats(s["id"])
-            out.append({
-                "id": s["id"], "ip": s["ip"],
-                "custom": s.get("custom", False),
-                "custom_name": s.get("custom_name", ""),
-                "country": s["country"], "country_zh": s["country_zh"],
-                "country_short": s["country_short"],
-                "ping": s["ping"], "score": s["score"],
-                "speed_h": vpngate.format_speed(s["speed_bps"]),
-                "speed_mbps": round(s["speed_bps"] / 1_000_000, 1),
-                "sessions": s["sessions"], "proto": s["proto"],
-                "uptime_h": vpngate.format_uptime(s["uptime_s"]),
-                "uptime_s": s["uptime_s"],
-                "node_ok": st["ok"], "node_fail": st["fail"],
-                "success_rate": st["success_rate"],
-                "blacklisted": st["blacklisted"],
-                "blacklist_reason": st["blacklist_reason"],
-                "last_probe": s.get("last_probe") or 0,
-                "last_probe_ok": s.get("last_probe_ok") or 0,
-                "first_seen": s.get("first_seen") or 0,
-                "ip_quality": self._ip_quality_of(s.get("ip", "")),
-            })
+            try:
+                st = self.store.stats(s["id"])
+                out.append({
+                    "id": s["id"], "ip": s["ip"],
+                    "custom": s.get("custom", False),
+                    "custom_name": s.get("custom_name", ""),
+                    "country": s["country"], "country_zh": s["country_zh"],
+                    "country_short": s["country_short"],
+                    "ping": s["ping"], "score": s["score"],
+                    "speed_h": vpngate.format_speed(s["speed_bps"]),
+                    "speed_mbps": round(s["speed_bps"] / 1_000_000, 1),
+                    "sessions": s["sessions"], "proto": s["proto"],
+                    "uptime_h": vpngate.format_uptime(s["uptime_s"]),
+                    "uptime_s": s["uptime_s"],
+                    "node_ok": st["ok"], "node_fail": st["fail"],
+                    "success_rate": st["success_rate"],
+                    "blacklisted": st["blacklisted"],
+                    "blacklist_reason": st["blacklist_reason"],
+                    "last_probe": s.get("last_probe") or 0,
+                    "last_probe_ok": s.get("last_probe_ok") or 0,
+                    "first_seen": s.get("first_seen") or 0,
+                    "ip_quality": self._ip_quality_of(s.get("ip", "")),
+                })
+            except Exception as e:
+                # 单个坏节点只跳过不炸列表
+                skipped += 1
+                self.log(f"[api] 跳过异常节点 {s.get('id')}: {e}")
+        if skipped:
+            self.log(f"[api] 节点列表共跳过 {skipped} 个异常节点")
         return {"ok": True, "servers": out,
                 "blocked": self.store.blocked_list()}
 
