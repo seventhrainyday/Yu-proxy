@@ -775,9 +775,9 @@ class Daemon:
         while not self._stop_event.wait(3600):
             try:
                 hours = float(self.cfg.get("probe", {})
-                              .get("full_check_interval_h", 24))
+                              .get("full_check_interval_h", 6))
             except (TypeError, ValueError):
-                hours = 24
+                hours = 6
             if hours <= 0:
                 continue
             self._probe_acc = getattr(self, "_probe_acc", 0) + 1
