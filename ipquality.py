@@ -32,7 +32,10 @@ from typing import Any
 
 BATCH_URL = "http://ip-api.com/batch?fields=status,proxy,hosting,mobile,isp,org,as,query"
 BATCH_SIZE = 15          # 免费版每批 15 个 IP
-BATCH_INTERVAL = 1.6     # 批次间隔秒（45 请求/分钟限流下留余量）
+# ip-api 免费限流 45 请求/分钟；单批 1 个请求，间隔 1.5 秒 ≈ 40 请求/分钟，留余量
+BATCH_INTERVAL = 1.5
+# 429 限流后的退避秒数（递增）
+RETRY_BACKOFF = (10, 20, 40)
 CACHE_FILENAME = "ip_quality.json"
 
 # ---------- 启发式信号 ----------
@@ -180,31 +183,42 @@ def _fetch_batch(ips: list[str], timeout: float = 15.0) -> dict[str, dict]:
     return out
 
 
-def batch_check(ips: list[str], threads: int = 4,
+def _is_rate_limit(e: BaseException) -> bool:
+    """是不是 429 限流。"""
+    import urllib.error
+    return isinstance(e, urllib.error.HTTPError) and e.code == 429
+
+
+def batch_check(ips: list[str], threads: int = 1,
                 timeout: float = 15.0,
                 log=None) -> dict[str, dict]:
-    """多线程批量查询 IP 质量。返回 {ip: info}，失败的 IP 不在结果中。
+    """批量查询 IP 质量。返回 {ip: info}，失败的 IP 不在结果中。
 
-    threads 指并发批次数（每批 15 个 IP），默认 4 足够（限流 45 请求/分钟）。
+    串行请求、每批间隔 BATCH_INTERVAL（≈40 请求/分钟，不触发 45/分钟限流）；
+    遇到 429 自动退避重试。threads 参数保留兼容，实际串行。
     """
     ips = [ip for ip in dict.fromkeys(ips) if ip]  # 去重去空
     if not ips:
         return {}
     batches = [ips[i:i + BATCH_SIZE] for i in range(0, len(ips), BATCH_SIZE)]
-    threads = max(1, min(8, int(threads or 4)))
     results: dict[str, dict] = {}
-    # 串行批次 + 批次内并发：简单且不触发限流
-    for i in range(0, len(batches), threads):
-        chunk = batches[i:i + threads]
-        with ThreadPoolExecutor(max_workers=len(chunk)) as ex:
-            futs = {ex.submit(_fetch_batch, b, timeout): b for b in chunk}
-            for fut in as_completed(futs):
-                try:
-                    results.update(fut.result())
-                except Exception as e:
+    for i, b in enumerate(batches):
+        for attempt in range(len(RETRY_BACKOFF) + 1):
+            try:
+                results.update(_fetch_batch(b, timeout))
+                break
+            except Exception as e:
+                if _is_rate_limit(e) and attempt < len(RETRY_BACKOFF):
+                    wait = RETRY_BACKOFF[attempt]
                     if log:
-                        log(f"[ipquality] 批次查询失败: {e}")
-        if i + threads < len(batches):
+                        log(f"[ipquality] 触发限流，{wait} 秒后重试 "
+                            f"({attempt + 1}/{len(RETRY_BACKOFF)})…")
+                    time.sleep(wait)
+                    continue
+                if log:
+                    log(f"[ipquality] 批次查询失败: {e}")
+                break
+        if i + 1 < len(batches):
             time.sleep(BATCH_INTERVAL)
     return results
 
