@@ -1481,15 +1481,39 @@ async function checkUpdate(silent) {
   }
 }
 async function doUpdate() {
-  if (!confirm('开始一键更新？更新过程约 30 秒，服务会自动重启，之后请刷新页面。')) return;
+  if (!confirm('开始一键更新？更新过程约 1-3 分钟，服务会自动重启，完成后页面自动刷新。')) return;
   const msg = document.getElementById('about-msg');
   try {
     const r = await api('/api/update', 'POST', {});
     if (!r.ok) throw new Error(r.error || '启动失败');
-    msg.innerHTML = '更新中… <span class="spin">⏳</span> 服务正在重启，约 30 秒后请手动刷新页面。';
     msg.style.color = 'var(--primary)';
     document.getElementById('btn-update').style.display = 'none';
     toast('更新已开始', 'ok');
+    // 轮询等待：更新最后一步会重启服务（面板短暂打不开是正常的），
+    // 检测到"先断开、再恢复"即判定重启完成，自动刷新页面。
+    const t0 = Date.now();
+    let sawDown = false;
+    const timer = setInterval(async () => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      try {
+        await api('/api/update_check', 'POST', {});
+        if (sawDown) {
+          clearInterval(timer);
+          msg.innerHTML = '更新完成，正在刷新…';
+          setTimeout(() => location.reload(), 800);
+          return;
+        }
+        msg.innerHTML = `更新中… ⏳ 正在下载安装（已等待 ${s} 秒）…`;
+      } catch(e) {
+        sawDown = true;
+        msg.innerHTML = `更新中… ⏳ 服务正在重启（已等待 ${s} 秒），稍后自动刷新…`;
+      }
+      if (s > 300) {
+        clearInterval(timer);
+        msg.innerHTML = '等待超时，请手动刷新页面查看版本号。';
+        document.getElementById('btn-update').style.display = '';
+      }
+    }, 5000);
   } catch(e) { toast('失败：' + e.message, 'err'); }
 }
 
