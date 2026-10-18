@@ -487,15 +487,22 @@ class ProxyContext:
             except ValueError:
                 self.log(f"[proxy] 白名单条目无效已忽略: {entry}")
 
+    # 本机回环永远放行：健康检查等本机服务走 127.0.0.1/::1，
+    # 不能被来源白名单误杀（否则看门狗误判隧道死亡无限切换）
+    _LOOPBACK_NETS = (ipaddress.ip_network("127.0.0.0/8"),
+                      ipaddress.ip_network("::1/128"))
+
     def ip_allowed(self, ip: str) -> bool:
-        if not self.allow_ips:
-            return True  # 未配置：不限
-        if not self._allow_nets:
-            return False  # 配置了但全部无效：fail-closed
         try:
             addr = ipaddress.ip_address((ip or "").strip())
         except ValueError:
             return False
+        if any(addr in net for net in self._LOOPBACK_NETS):
+            return True  # 回环：永远放行
+        if not self.allow_ips:
+            return True  # 未配置：不限
+        if not self._allow_nets:
+            return False  # 配置了但全部无效：fail-closed
         return any(addr.version == net.version and addr in net
                    for net in self._allow_nets)
 
