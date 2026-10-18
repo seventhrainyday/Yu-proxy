@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.69"
+VERSION = "1.3.70"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1003,6 +1003,9 @@ class Daemon:
                     env["http_proxy"] = proxy_url
                     env["https_proxy"] = proxy_url
                 script = (
+                    # 用 { } 分组：末尾的 >>log 作用于整个脚本，
+                    # 否则重定向只绑最后一个 exit 命令，日志永远为空
+                    "{ "
                     "tmp=$(mktemp); ok=\"\"; "
                     "command -v curl >/dev/null || "
                     "{ echo \"[update] 未找到 curl，请先 apt install curl\"; "
@@ -1027,6 +1030,7 @@ class Daemon:
                     "echo \"[update] 全部源下载失败\"; rm -f \"$tmp\"; exit 1; fi; "
                     "echo \"[update] 开始安装\"; "
                     "bash \"$tmp\"; ec=$?; rm -f \"$tmp\"; exit $ec"
+                    "; }"
                     f" >>{log_path} 2>&1"
                 )
                 subprocess.Popen(
