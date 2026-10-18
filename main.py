@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.75"
+VERSION = "1.3.76"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -1686,10 +1686,7 @@ class Daemon:
                     threading.Thread(
                         target=self._run_probe_batch, daemon=True,
                         name="probe-fetch").start()
-                    # 拉取后顺带检测 IP 质量（后台线程，不阻塞）
-                    threading.Thread(
-                        target=self._run_ipquality_check, daemon=True,
-                        name="iq-fetch").start()
+
                 except Exception as e:
                     self.log(f"[refetch] 刷新失败: {e}")
 
