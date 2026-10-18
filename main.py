@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.68"
+VERSION = "1.3.69"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -103,6 +103,8 @@ def default_config() -> dict:
             "max_ping_ms": 0,
             "skip_unavailable": True,
             "prefer_ip_quality": True,
+            "ip_priority": ["residential", "mobile", "unknown",
+                            "datacenter", "proxy"],
         },
         "scheduler": {
             "mode": "failover",
@@ -210,6 +212,12 @@ def validate_config(cfg: dict) -> str | None:
             return "countries_allow 须为列表"
         if not isinstance(cfg["filter"].get("countries_block"), list):
             return "countries_block 须为列表"
+        _prio = cfg["filter"].get("ip_priority")
+        if _prio is not None:
+            if not isinstance(_prio, list) or not _prio or \
+                    any(t not in ("residential", "mobile", "unknown",
+                                  "datacenter", "proxy") for t in _prio):
+                return "filter.ip_priority 非法（须为 IP 类型列表）"
         if float(cfg["filter"].get("min_bandwidth_mbps", 0)) < 0:
             return "min_bandwidth_mbps 非法"
         if not isinstance(cfg["proxy"].get("allow_ips"), list):
@@ -584,8 +592,18 @@ class Daemon:
     def _hook_servers(self) -> dict:
         servers = self._all_servers()
         vpn_cfg = self.cfg["vpn"]
+        fcfg = self.cfg["filter"]
+        # 列表展示也按 IP 优先级排（与自动选中一致）
+        if fcfg.get("prefer_ip_quality", True):
+            for s in servers:
+                try:
+                    s["ip_quality"] = self._ip_quality_of(s.get("ip", ""))
+                except Exception:
+                    s["ip_quality"] = {"ip_type": "unknown"}
         ordered = vpngate.sort_servers(
-            servers, vpn_cfg.get("prefer_countries"), vpn_cfg.get("tcp_only"))
+            servers, vpn_cfg.get("prefer_countries"), vpn_cfg.get("tcp_only"),
+            prefer_ip_quality=fcfg.get("prefer_ip_quality", True),
+            ip_priority=fcfg.get("ip_priority") or None)
         out = []
         skipped = 0
         for s in ordered:
@@ -611,7 +629,7 @@ class Daemon:
                 "last_probe": s.get("last_probe") or 0,
                     "last_probe_ok": s.get("last_probe_ok") or 0,
                     "first_seen": s.get("first_seen") or 0,
-                    "ip_quality": self._ip_quality_of(s.get("ip", "")),
+                    "ip_quality": s.get("ip_quality") or self._ip_quality_of(s.get("ip", "")),
                 })
             except Exception as e:
                 # 单个坏节点只跳过不炸列表
@@ -1345,6 +1363,15 @@ class Daemon:
                 return None
         vpn_cfg = self.cfg["vpn"]
         fcfg = self.cfg["filter"]
+        # 自动选节点时挂载 IP 质量（否则全部按 unknown 排，住宅优先不生效）
+        if fcfg.get("prefer_ip_quality", True):
+            for s in servers:
+                try:
+                    s["ip_quality"] = {
+                        "ip_type": self._ip_quality_of(
+                            s.get("ip", "")).get("ip_type", "unknown")}
+                except Exception:
+                    s["ip_quality"] = {"ip_type": "unknown"}
         kw = dict(
             allow=fcfg.get("countries_allow"),
             block=fcfg.get("countries_block"),
@@ -1353,6 +1380,7 @@ class Daemon:
             is_blacklisted=lambda sid: self.store.is_blacklisted(sid)[0],
             skip_unavailable=fcfg.get("skip_unavailable", True),
             prefer_ip_quality=fcfg.get("prefer_ip_quality", True),
+            ip_priority=fcfg.get("ip_priority") or None,
         )
         if self.cfg["scheduler"].get("mode") == "random":
             return vpngate.pick_weighted(

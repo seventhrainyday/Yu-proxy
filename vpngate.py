@@ -158,19 +158,28 @@ def detect_remote(config_b64: str, fallback_ip: str = "") -> dict[str, Any]:
 IPQ_RANK = {"residential": 0, "mobile": 1, "unknown": 2,
             "datacenter": 3, "proxy": 4}
 
+# IP 类型优先级（可在面板调整顺序）。越靠前越优先被选中。
+DEFAULT_IP_PRIORITY = ("residential", "mobile", "unknown",
+                       "datacenter", "proxy")
+IP_TYPE_ZH = {"residential": "住宅", "mobile": "移动", "unknown": "未知",
+              "datacenter": "机房", "proxy": "代理标记"}
+
 
 def sort_servers(
     servers: list[dict[str, Any]],
     prefer_countries: list[str] | None = None,
     tcp_only: bool = False,
     prefer_ip_quality: bool = False,
+    ip_priority: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """排序：偏好国家优先，其次 ping 小优先，再按评分高优先。
 
     ping=0 表示官方没给数据，排到后面。
-    prefer_ip_quality=True 时，IP 质量好的排前面（住宅>移动>未知>机房>代理标记）。
+    prefer_ip_quality=True 时按 ip_priority 的顺序排 IP 类型
+    （默认 住宅>移动>未知>机房>代理标记，可在面板调整）。
     """
     prefer = [c.upper() for c in (prefer_countries or [])]
+    prio = list(ip_priority) if ip_priority else list(DEFAULT_IP_PRIORITY)
 
     def key(s: dict[str, Any]):
         cc = s["country_short"].upper()
@@ -178,7 +187,7 @@ def sort_servers(
         ping = s["ping"] if s["ping"] > 0 else 10**9
         if prefer_ip_quality:
             iq = (s.get("ip_quality") or {}).get("ip_type", "unknown")
-            ipq_rank = IPQ_RANK.get(iq, 2)
+            ipq_rank = prio.index(iq) if iq in prio else len(prio)
             return (prefer_rank, ipq_rank, ping, -s["score"])
         return (prefer_rank, ping, -s["score"])
 
@@ -372,6 +381,7 @@ def pick_best(
     is_blacklisted: Callable[[str], bool] | None = None,
     skip_unavailable: bool = False,
     prefer_ip_quality: bool = False,
+    ip_priority: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     """按排序策略挑一个最优节点。
 
@@ -383,7 +393,7 @@ def pick_best(
                         max_ping_ms, skip_unavailable)
     candidates = [
         s for s in sort_servers(pool, prefer_countries, tcp_only,
-                                prefer_ip_quality)
+                                prefer_ip_quality, ip_priority)
         if s["id"] not in exclude
         and not (is_blacklisted and is_blacklisted(s["id"]))
     ]
@@ -402,6 +412,7 @@ def pick_weighted(
     is_blacklisted: Callable[[str], bool] | None = None,
     skip_unavailable: bool = False,
     prefer_ip_quality: bool = False,
+    ip_priority: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     """权重随机：分数越高被选中的概率越大（调度策略用）。"""
     exclude = exclude_ids or set()
@@ -409,7 +420,7 @@ def pick_weighted(
                         max_ping_ms, skip_unavailable)
     candidates = [
         s for s in sort_servers(pool, prefer_countries, tcp_only,
-                                prefer_ip_quality)
+                                prefer_ip_quality, ip_priority)
         if s["id"] not in exclude
         and not (is_blacklisted and is_blacklisted(s["id"]))
     ]

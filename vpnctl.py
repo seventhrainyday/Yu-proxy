@@ -117,7 +117,11 @@ class VPNController:
 
     def start(self, server: dict[str, Any],
               timeout: float = START_TIMEOUT) -> None:
-        """连接指定节点。成功返回，失败抛 RuntimeError。"""
+        """连接指定节点。成功返回，失败抛 RuntimeError。
+
+        注意：等待隧道建立的几十秒里不持有 self._lock，
+        否则面板 /api/status 会被卡死（连接/切换时面板打不开的根因）。
+        """
         with self._lock:
             self._stop_locked()
             self._prepare_files_locked(server)
@@ -151,8 +155,16 @@ class VPNController:
             self._connected = False
             self._connected_at = None
             self._tun_ip = None
+            proc = self._proc
 
-            if not self._wait_success_locked(log_path, timeout):
+        # ---- 锁外等待隧道建立（面板不再被卡）----
+        ok = self._wait_success(log_path, timeout, proc)
+
+        with self._lock:
+            if self._proc is not proc:
+                # 等待期间被 stop() 或新的 start() 顶掉
+                raise RuntimeError("连接已被中断")
+            if not ok:
                 tail = self._tail_log(log_path, 15)
                 self._stop_locked()
                 raise RuntimeError(
@@ -217,11 +229,11 @@ class VPNController:
             except Exception as e:
                 self.log(f"[vpn] 清理 {self.device} 失败: {e}")
 
-    def _wait_success_locked(self, log_path: Path,
-                             timeout: float) -> bool:
+    def _wait_success(self, log_path: Path,
+                      timeout: float, proc) -> bool:
+        """等待 openvpn 日志出现成功标记。不持有锁，可被 stop() 中断。"""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            proc = self._proc
             if proc is None or proc.poll() is not None:
                 self.log("[vpn] openvpn 进程已退出 "
                          f"(code={proc.poll() if proc else '?'})")

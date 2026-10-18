@@ -124,6 +124,10 @@ button{font-family:inherit}
 .btn.danger{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--red)}
 .btn.warn{background:rgba(249,115,22,.1);border-color:rgba(249,115,22,.3);color:var(--orange)}
 .btn.mini{padding:6px 12px;font-size:12px}
+.ippick{display:flex;flex-direction:column;gap:6px;max-width:340px}
+.ipitem{display:flex;align-items:center;gap:10px;background:var(--hover);border:1px solid var(--card-border);border-radius:10px;padding:8px 12px;font-size:14px}
+.ipnum{display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--primary);color:#fff;font-size:12px;align-items:center;justify-content:center;flex:none}
+.ipbtns{margin-left:auto;display:flex;gap:4px}
 .btn:disabled{opacity:.5;cursor:default;transform:none}
 .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
 /* ===== 表单 ===== */
@@ -1139,7 +1143,8 @@ const SETTINGS = {
   'sched-filter': [['filter.countries_allow','国家白名单（只用这些国家的节点，空=不限）','countrypick'],
     ['filter.countries_block','国家黑名单（不用这些国家的节点）','countrypick'],
     ['filter.skip_unavailable','只连接探测可用的节点（跳过探测失败的）','checkbox'],
-    ['filter.prefer_ip_quality','优先连接 IP 质量高的节点（住宅>移动>机房）','checkbox'],
+    ['filter.prefer_ip_quality','启用 IP 类型优先级（按下面顺序优先连接）','checkbox'],
+    ['filter.ip_priority','IP 类型优先级（从上到下优先）','ippriority'],
     ['filter.min_bandwidth_mbps','最低带宽（Mbps，0=不限）','number'],
     ['filter.max_ping_ms','最大延迟（ms，0=不限）','number'],
     ['probe.threads','探测线程数（1-100，拉取后验证与全量检测共用）','number'],
@@ -1234,6 +1239,11 @@ async function openSettingsPage(page) {
         input = `<div class="countrypick" id="${id}">` + (codes.length ?
           codes.map(c => `<label class="cpick"><input type="checkbox" value="${c}"${picked.includes(c) ? ' checked' : ''}>${esc(seen[c])}</label>`).join('') :
           '<span class="note">暂无节点数据</span> <button class="btn mini" onclick="reloadCountries()">加载国家列表</button>') + `</div>`;
+      } else if (type === 'ippriority') {
+        const order = Array.isArray(v) && v.length ? v.slice() :
+          ['residential','mobile','unknown','datacenter','proxy'];
+        input = `<div class="ippick" id="${id}"></div>`;
+        setTimeout(() => renderIpPrio(id, order), 0);
       } else {
         input = `<input id="${id}" type="${type}" value="${esc(v == null ? '' : v)}">` +
           (extra === 'regen-secret' ? ` <button class="btn mini" onclick="regenSecret()">重新生成</button><div class="fld-hint" id="secret-url-hint"></div>` : '') +
@@ -1279,6 +1289,25 @@ function regenSecret() {
   document.getElementById(fieldId('panel.secret_path')).value = s;
   updateSecretHint();
 }
+const IP_TYPE_ZH = {residential:'住宅', mobile:'移动', unknown:'未知', datacenter:'机房', proxy:'代理标记'};
+function renderIpPrio(id, order) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  box.innerHTML = order.map((t, i) =>
+    `<div class="ipitem" data-iptype="${t}"><span class="ipnum">${i + 1}</span>${IP_TYPE_ZH[t] || t}` +
+    `<span class="ipbtns">` +
+    `<button class="btn mini" onclick="ipPrioMove('${id}',${i},-1)"${i === 0 ? ' disabled' : ''}>▲</button>` +
+    `<button class="btn mini" onclick="ipPrioMove('${id}',${i},1)"${i === order.length - 1 ? ' disabled' : ''}>▼</button>` +
+    `</span></div>`).join('');
+}
+function ipPrioMove(id, idx, dir) {
+  const box = document.getElementById(id);
+  const order = [...box.querySelectorAll('[data-iptype]')].map(d => d.dataset.iptype);
+  const j = idx + dir;
+  if (j < 0 || j >= order.length) return;
+  [order[idx], order[j]] = [order[j], order[idx]];
+  renderIpPrio(id, order);
+}
 function regenDevice() {
   const chars = 'abcdef0123456789';
   let s = '';
@@ -1304,6 +1333,8 @@ async function saveSettingsPage(page) {
       let v;
       if (type === 'countrypick') {
         v = [...el.querySelectorAll('input:checked')].map(i => i.value);
+      } else if (type === 'ippriority') {
+        v = [...el.querySelectorAll('[data-iptype]')].map(d => d.dataset.iptype);
       } else {
         v = type === 'checkbox' ? el.checked : el.value.trim();
       }
