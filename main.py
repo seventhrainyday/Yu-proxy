@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.71"
+VERSION = "1.3.72"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -586,6 +586,8 @@ class Daemon:
         if not e:
             return {"ip_type": "unknown"}
         return {"ip_type": e.get("ip_type", "unknown"),
+                "score": e.get("score"),
+                "factors": e.get("factors") or [],
                 "isp": e.get("isp", ""), "org": e.get("org", ""),
                 "as": e.get("as", "")}
 
@@ -767,6 +769,11 @@ class Daemon:
                 return {"ok": True, "checked": 0, "cached": len(ips)}
             self.log(f"[ipquality] 开始检测 {len(todo)} 个 IP…")
             infos = ipquality.batch_check(todo, log=self.log)
+            # 分数模糊的 IP 用反向 DNS 辅助判断
+            try:
+                ipquality.enrich_rdns(infos, log=self.log)
+            except Exception as e:
+                self.log(f"[ipquality] 反向 DNS 补充失败: {e}")
             self.iq_cache.update(infos)
             self.iq_cache.prune()
             ok_n = sum(1 for i in infos.values()

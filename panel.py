@@ -1014,8 +1014,14 @@ function renderNodes() {
   else if (sort === 'speed') list = [...list].sort((a, b) => (b.speed_mbps || 0) - (a.speed_mbps || 0));
   else if (sort === 'ipq') {
     const rank = {residential: 0, mobile: 1, unknown: 2, datacenter: 3, proxy: 4};
-    list = [...list].sort((a, b) =>
-      (rank[(a.ip_quality || {}).ip_type] ?? 2) - (rank[(b.ip_quality || {}).ip_type] ?? 2));
+    const key = s => {
+      const q = s.ip_quality || {};
+      return q.score != null ? [0, -q.score] : [1, rank[q.ip_type] ?? 2];
+    };
+    list = [...list].sort((a, b) => {
+      const ka = key(a), kb = key(b);
+      return ka[0] - kb[0] || ka[1] - kb[1];
+    });
   }
   document.getElementById('nodes-count').textContent = '共 ' + list.length + ' 个';
   if (!list.length) { box.innerHTML = '<div class="empty">没有匹配的节点</div>'; return; }
@@ -1024,8 +1030,10 @@ function renderNodes() {
     const ql = nodeQuality(s);
     const iq = s.ip_quality || {ip_type: 'unknown'};
     const im = IQ_META[iq.ip_type] || IQ_META.unknown;
+    const iqScore = iq.score != null ? ' ' + iq.score + '分' : '';
+    const iqTip = esc([(iq.factors || []).join('；'), iq.isp || '', iq.as || ''].filter(Boolean).join(' | '));
     const badges = [`<span class="badge ${ql.cls}">${ql.txt}</span>`,
-      `<span class="badge ${im[1]}" title="${esc(iq.isp || '')} ${esc(iq.as || '')}">${im[0]}</span>`].join('');
+      `<span class="badge ${im[1]}" title="${iqTip}">${im[0]}${iqScore}</span>`].join('');
     const actions = s.blacklisted && s.blacklist_reason === 'manual'
       ? `<button class="btn mini" onclick="unblockNode('${esc(s.id)}')">♻️ 解除拉黑</button>`
       : `<button class="btn mini primary" onclick="connectNode('${esc(s.id)}')">连接</button>` +
