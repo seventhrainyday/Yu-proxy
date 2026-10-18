@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.73"
+VERSION = "1.3.74"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -763,8 +763,11 @@ class Daemon:
             if ips is None:
                 servers, _ = vpngate.load_cache(self.data_dir)
                 ips = [s["ip"] for s in servers if s.get("ip")]
-            # 只查缓存过期/缺失的
-            todo = [ip for ip in ips if not self.iq_cache.get(ip, ttl)]
+            # 只查缓存过期/缺失/缺评分字段的（旧缓存无 score，补查一次）
+            def _need(ip: str) -> bool:
+                e = self.iq_cache.get(ip, ttl)
+                return not e or e.get("score") is None
+            todo = [ip for ip in ips if _need(ip)]
             if not todo:
                 return {"ok": True, "checked": 0, "cached": len(ips)}
             self.log(f"[ipquality] 开始检测 {len(todo)} 个 IP…")
