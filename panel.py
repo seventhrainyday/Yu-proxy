@@ -1161,7 +1161,7 @@ const SETTINGS = {
     ['proxy.pass','代理密码（不修改请留空；清空账号可关闭认证）','password'],
     ['proxy.dns_server','隧道 DNS（防泄漏：经隧道解析）','text'],
     ['proxy.allow_direct_fallback','VPN 断开时直连兜底（默认关闭更安全）','checkbox'],
-    ['proxy.allow_ips','来源 IP 白名单（逗号分隔，空=不限）','text']],
+    ['proxy.allow_ips','来源 IP 白名单（逗号分隔，支持 10.102.0.0/24 网段写法，空=不限）','text']],
   'net-kill': [['killswitch.allow_hosts','额外放行域名（逗号分隔，VPNGate API 自动放行）','text']],
   'sec-panel': [['panel.bind','监听地址','text'],
     ['panel.port','监听端口','number'],

@@ -13,6 +13,7 @@ VPN 没连上时默认拒绝服务（fail-closed），避免流量裸奔；
 from __future__ import annotations
 
 import base64
+import ipaddress
 import random
 import secrets
 from passwd import verify_password
@@ -475,11 +476,28 @@ class ProxyContext:
         self.allow_ips = allow_ips or []
         self.log = log
         self.stats = TrafficStats()
+        # 白名单预编译：支持精确 IP 与 CIDR 网段（如 10.102.0.0/24）
+        self._allow_nets: list = []
+        for entry in self.allow_ips:
+            entry = (entry or "").strip()
+            if not entry:
+                continue
+            try:
+                self._allow_nets.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError:
+                self.log(f"[proxy] 白名单条目无效已忽略: {entry}")
 
     def ip_allowed(self, ip: str) -> bool:
         if not self.allow_ips:
-            return True
-        return ip in self.allow_ips
+            return True  # 未配置：不限
+        if not self._allow_nets:
+            return False  # 配置了但全部无效：fail-closed
+        try:
+            addr = ipaddress.ip_address((ip or "").strip())
+        except ValueError:
+            return False
+        return any(addr.version == net.version and addr in net
+                   for net in self._allow_nets)
 
 
 def _serve_one(client: socket.socket, addr, ctx: ProxyContext,
