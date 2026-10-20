@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.76"
+VERSION = "1.3.77"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -63,6 +63,7 @@ def default_config() -> dict:
             "dns_server": "8.8.8.8",
             "allow_direct_fallback": False,
             "allow_ips": [],
+            "direct_port": 0,
         },
         "vpn": {
             "device": "tun0",
@@ -180,6 +181,11 @@ def validate_config(cfg: dict) -> str | None:
                 return f"{sec}.port 必须在 1-65535 之间"
             if not str(cfg[sec].get("bind", "")).strip():
                 return f"{sec}.bind 不能为空"
+        _dp = int(cfg["proxy"].get("direct_port", 0) or 0)
+        if _dp != 0 and not 1 <= _dp <= 65535:
+            return "proxy.direct_port 必须为 0（关闭）或 1-65535"
+        if _dp and _dp == int(cfg["proxy"]["port"]):
+            return "proxy.direct_port 不能与 proxy.port 相同"
         if not str(cfg["panel"].get("user", "")).strip():
             return "panel.user 不能为空"
         if not str(cfg["panel"].get("pass", "")).strip():
@@ -388,6 +394,42 @@ class Daemon:
         )
         self.proxy = ProxyServer(proxy_cfg["bind"], proxy_cfg["port"],
                                  self.proxy_ctx)
+        # 直连端口（可选）：不走隧道、系统直出；复用 bind/认证/白名单
+        old_direct = getattr(self, "direct_proxy", None)
+        if old_direct is not None:
+            old_direct.stop()
+            self.direct_proxy = None
+        direct_port = int(proxy_cfg.get("direct_port", 0) or 0)
+        if direct_port > 0 and direct_port != int(proxy_cfg["port"]):
+            self.direct_ctx = ProxyContext(
+                get_device=lambda: None,
+                auth=auth,
+                dns_server=proxy_cfg.get("dns_server", "8.8.8.8"),
+                allow_direct_fallback=True,  # 直连口本就不经隧道
+                allow_ips=allow_ips,
+                log=self.log,
+            )
+            self.direct_proxy = ProxyServer(
+                proxy_cfg["bind"], direct_port, self.direct_ctx)
+        elif direct_port > 0:
+            self.log("[proxy] 直连端口与主端口相同，已忽略")
+
+    def _start_proxies(self) -> None:
+        self.proxy.start()
+        if getattr(self, "direct_proxy", None) is not None:
+            try:
+                self.direct_proxy.start()
+                self.log(f"[proxy] 直连端口已启用: "
+                         f"{self.direct_proxy.bind}:"
+                         f"{self.direct_proxy.port}（不走节点）")
+            except OSError as e:
+                self.log(f"[proxy] 直连端口启动失败: {e}")
+                self.direct_proxy = None
+
+    def _stop_proxies(self) -> None:
+        if getattr(self, "direct_proxy", None) is not None:
+            self.direct_proxy.stop()
+        self.proxy.stop()
 
     def _build_watchdog(self) -> None:
         wd_cfg = self.cfg["watchdog"]
@@ -555,6 +597,9 @@ class Daemon:
             "vpn": vpn_status,
             "proxy": {
                 "listen": f"{self.proxy.bind}:{self.proxy.port}",
+                "direct_listen": (
+                    f"{self.direct_proxy.bind}:{self.direct_proxy.port}"
+                    if getattr(self, "direct_proxy", None) else None),
                 "auth": self.proxy_ctx.auth is not None,
                 # 前端用 up_bytes/down_bytes 命名
                 "up_bytes": pstat["tx"],
@@ -1572,9 +1617,9 @@ class Daemon:
 
         # 代理：地址/端口/认证/DNS/兜底任一变化都重启代理
         if new_cfg["proxy"] != old["proxy"]:
-            self.proxy.stop()
+            self._stop_proxies()
             self._build_proxy()
-            self.proxy.start()
+            self._start_proxies()
             self.log("[api] 代理已按新配置重启")
 
         # 面板鉴权：热更新
@@ -1716,7 +1761,7 @@ class Daemon:
             self.log("[warn] 非 root 运行：OpenVPN 与 tun 绑定可能失败，"
                      "建议用 root 运行")
         self.log(f"Yu-proxy v{VERSION} 启动")
-        self.proxy.start()
+        self._start_proxies()
         self.panel.start()
 
         # Kill-switch（按配置启用）
@@ -1756,7 +1801,7 @@ class Daemon:
         self.exit_manager.stop_all()
         self.ks.clear()
         self.panel.stop()
-        self.proxy.stop()
+        self._stop_proxies()
         self.controller.stop()
         self.log("已停止")
 

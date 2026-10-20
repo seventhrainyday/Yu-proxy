@@ -712,6 +712,7 @@ async function loadStatus() {
     else le.style.display = 'none';
     document.getElementById('proxy-info').textContent =
       '代理地址：' + s.proxy.listen + '（HTTP / HTTPS CONNECT / SOCKS5 三合一）'
+      + (s.proxy.direct_listen ? ' · 直连端口：' + s.proxy.direct_listen + '（不走节点）' : '')
       + (s.proxy.auth ? ' · 已启用账号认证' : '')
       + ' · 累计下行 ' + fmtBytes(s.proxy.down_bytes) + ' / 上行 ' + fmtBytes(s.proxy.up_bytes);
     document.getElementById('btn-logout').style.display = s.login_enabled ? '' : 'none';
@@ -1170,6 +1171,7 @@ const SETTINGS = {
     ['watchdog.max_retries','每次故障最多试几个节点','number']],
   'net-proxy': [['proxy.bind','监听地址（127.0.0.1=仅本机，0.0.0.0=所有网卡）','text'],
     ['proxy.port','监听端口','number'],
+    ['proxy.direct_port','直连端口（不走节点、流量直出本地网络，与主端口共用地址/认证/白名单，0=关闭）','number'],
     ['proxy.user','代理账号（空=不鉴权）','text'],
     ['proxy.pass','代理密码（不修改请留空；清空账号可关闭认证）','password'],
     ['proxy.dns_server','隧道 DNS（防泄漏：经隧道解析）','text'],
@@ -1198,7 +1200,7 @@ const SETTINGS = {
     ['notify.events.recover','连接恢复时通知','checkbox']],
 };
 const LIST_FIELDS = ['proxy.allow_ips','killswitch.allow_hosts'];
-const INT_FIELDS = ['proxy.port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads','pool.upload_interval_h',
+const INT_FIELDS = ['proxy.port','proxy.direct_port','panel.port','vpn.connect_retries','vpngate.refresh_interval_h','probe.threads','pool.upload_interval_h',
   'filter.min_bandwidth_mbps','filter.max_ping_ms','scheduler.rotate_interval_min',
   'watchdog.interval','watchdog.health_interval','watchdog.fail_threshold','watchdog.max_retries',
   'notify.email.smtp_port'];

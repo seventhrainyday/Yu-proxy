@@ -363,7 +363,7 @@ def handle_http(client: socket.socket, first: bytes, ctx: "ProxyContext") -> Non
                            b"Content-Length: 0\r\n\r\n")
         except OSError:
             pass
-        ctx.log(f"[proxy] HTTP 失败: {e}")
+        ctx.log_throttled(f"[proxy] HTTP 失败: {e}（来源 {_peer(client)}）")
     finally:
         try:
             client.close()
@@ -440,13 +440,16 @@ def handle_socks5(client: socket.socket, ctx: "ProxyContext") -> None:
         try:
             upstream = create_connection((host, port), device,
                                          ctx.dns_server)
-        except OSError:
+        except OSError as e:
+            ctx.log_throttled(
+                f"[proxy] SOCKS5 连接失败: {host}:{port} {e}"
+                f"（来源 {_peer(client)}）")
             client.sendall(b"\x05\x04\x00\x01\x00\x00\x00\x00\x00\x00")
             return
         client.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
         relay(client, upstream, ctx.stats)
     except Exception as e:
-        ctx.log(f"[proxy] SOCKS5 失败: {e}")
+        ctx.log_throttled(f"[proxy] SOCKS5 失败: {e}（来源 {_peer(client)}）")
     finally:
         try:
             client.close()
@@ -476,6 +479,9 @@ class ProxyContext:
         self.allow_ips = allow_ips or []
         self.log = log
         self.stats = TrafficStats()
+        # 失败日志限频：同一条失败 window 秒内只记一次，防刷屏
+        self._fail_lock = threading.Lock()
+        self._fail_seen: dict[str, tuple[float, int]] = {}
         # 白名单预编译：支持精确 IP 与 CIDR 网段（如 10.102.0.0/24）
         self._allow_nets: list = []
         for entry in self.allow_ips:
@@ -505,6 +511,34 @@ class ProxyContext:
             return False  # 配置了但全部无效：fail-closed
         return any(addr.version == net.version and addr in net
                    for net in self._allow_nets)
+
+    def log_throttled(self, msg: str, window: float = 300.0) -> None:
+        """失败日志限频：同一条消息 window 秒内只记一次，再次记录时
+        带上期间被抑制的次数。避免单个坏目标把日志刷满、盖住真问题。"""
+        now = time.time()
+        with self._fail_lock:
+            last, cnt = self._fail_seen.get(msg, (0.0, 0))
+            if now - last < window:
+                self._fail_seen[msg] = (last, cnt + 1)
+                return
+            suppressed = cnt
+            self._fail_seen[msg] = (now, 0)
+            if len(self._fail_seen) > 512:  # 顺带清理过期键，防无限增长
+                self._fail_seen = {
+                    k: v for k, v in self._fail_seen.items()
+                    if now - v[0] < window}
+        if suppressed:
+            msg = (f"{msg}（此前 {int(window // 60)} 分钟内同类失败"
+                   f"已抑制 {suppressed} 次）")
+        self.log(msg)
+
+
+def _peer(client: socket.socket) -> str:
+    """取客户端来源 IP（日志用），取不到返回 ?。"""
+    try:
+        return str(client.getpeername()[0])
+    except Exception:
+        return "?"
 
 
 def _serve_one(client: socket.socket, addr, ctx: ProxyContext,
