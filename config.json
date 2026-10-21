@@ -43,7 +43,7 @@
     "api_urls": [
       "https://www.vpngate.net/api/iphone/"
     ],
-    "refresh_interval_h": 6
+    "refresh_interval_h": 1
   },
   "filter": {
     "countries_allow": [],
@@ -87,7 +87,7 @@
   },
   "probe": {
     "threads": 20,
-    "full_check_interval_h": 24,
+    "full_check_interval_h": 6,
     "expire_hours": 72
   },
   "ipquality": {
