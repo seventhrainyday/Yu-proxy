@@ -174,9 +174,16 @@ def resolve(host: str, device: str | None,
 
 def create_connection(address: tuple[str, int], device: str | None,
                       dns_server: str = "8.8.8.8",
-                      timeout: float = 20.0) -> socket.socket:
-    """建上行连接：解析 + 绑定 tun 设备 + connect。"""
+                      timeout: float = 20.0,
+                      allow_ipv6: bool = False) -> socket.socket:
+    """建上行连接：解析 + 绑定 tun 设备 + connect。
+
+    allow_ipv6=True 且直连（无 tun）时走系统双栈：域名按
+    getaddrinfo 返回顺序逐个尝试，一个地址族不通自动回落另一个。
+    隧道路径保持 IPv4-only（VPNGate 隧道无 IPv6）。"""
     host, port = address
+    if allow_ipv6 and device is None:
+        return _create_connection_dual(host, port, timeout)
     ip = resolve(host, device, dns_server)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -187,6 +194,35 @@ def create_connection(address: tuple[str, int], device: str | None,
     except OSError:
         sock.close()
         raise
+
+
+def _create_connection_dual(host: str, port: int,
+                            timeout: float) -> socket.socket:
+    """系统双栈直连：字面 IP 按其地址族连；域名逐个尝试解析结果。"""
+    try:
+        ip = ipaddress.ip_address(host)
+        fam = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+        targets = [(fam, (host, port))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC,
+                                       socket.SOCK_STREAM)
+        except OSError:
+            raise OSError(f"解析 {host} 失败")
+        targets = [(info[0], info[4]) for info in infos]
+        if not targets:
+            raise OSError(f"解析 {host} 失败")
+    last_err: OSError | None = None
+    for fam, sockaddr in targets:
+        sock = socket.socket(fam, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as e:
+            last_err = e
+            sock.close()
+    raise last_err or OSError(f"连接 {host}:{port} 失败")
 
 
 # ---------------- 流量统计 ----------------
@@ -322,7 +358,8 @@ def handle_http(client: socket.socket, first: bytes, ctx: "ProxyContext") -> Non
         if method.upper() == "CONNECT":
             host, port = _parse_host_port(target, 443)
             upstream = create_connection((host, port), device,
-                                         ctx.dns_server)
+                                         ctx.dns_server,
+                                         allow_ipv6=ctx.allow_ipv6)
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             if rest:
                 upstream.sendall(rest)
@@ -354,7 +391,8 @@ def handle_http(client: socket.socket, first: bytes, ctx: "ProxyContext") -> Non
                + "\r\n".join(headers)
                + "\r\nConnection: close\r\n\r\n")
         upstream = create_connection((hostname, port), device,
-                                     ctx.dns_server)
+                                     ctx.dns_server,
+                                         allow_ipv6=ctx.allow_ipv6)
         upstream.sendall(req.encode("iso-8859-1") + rest)
         relay(client, upstream, ctx.stats)
     except Exception as e:
@@ -439,7 +477,8 @@ def handle_socks5(client: socket.socket, ctx: "ProxyContext") -> None:
             return
         try:
             upstream = create_connection((host, port), device,
-                                         ctx.dns_server)
+                                         ctx.dns_server,
+                                         allow_ipv6=ctx.allow_ipv6)
         except OSError as e:
             ctx.log_throttled(
                 f"[proxy] SOCKS5 连接失败: {host}:{port} {e}"
@@ -471,11 +510,13 @@ class ProxyContext:
                  dns_server: str = "8.8.8.8",
                  allow_direct_fallback: bool = False,
                  allow_ips: list[str] | None = None,
+                 allow_ipv6: bool = False,
                  log=print):
         self.get_device = get_device
         self.auth = auth
         self.dns_server = dns_server
         self.allow_direct_fallback = allow_direct_fallback
+        self.allow_ipv6 = allow_ipv6
         self.allow_ips = allow_ips or []
         self.log = log
         self.stats = TrafficStats()

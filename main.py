@@ -48,7 +48,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.77"
+VERSION = "1.3.78"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -406,6 +406,7 @@ class Daemon:
                 auth=auth,
                 dns_server=proxy_cfg.get("dns_server", "8.8.8.8"),
                 allow_direct_fallback=True,  # 直连口本就不经隧道
+                allow_ipv6=True,  # 直连口支持 IPv6 双栈（隧道口仍 IPv4）
                 allow_ips=allow_ips,
                 log=self.log,
             )
