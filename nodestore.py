@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +16,11 @@ class NodeStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._data: dict[str, dict] = {}
+        # 延迟合并落盘：一次故障转移会对每个候选节点连写多次
+        # （record_fail + temp_blacklist + …），旧实现每次都全量重写
+        # 整个文件。改为脏标记 + 5 秒定时合并，内存状态立即生效。
+        self._dirty = False
+        self._save_scheduled = False
         self._load()
 
     # ---------- 持久化 ----------
@@ -29,6 +35,21 @@ class NodeStore:
             self._data = {}
 
     def _save(self) -> None:
+        """标记脏并安排一次合并落盘（5 秒内的多次修改只写一次）。"""
+        self._dirty = True
+        if self._save_scheduled:
+            return
+        self._save_scheduled = True
+        t = threading.Timer(5.0, self._flush)
+        t.daemon = True
+        t.start()
+
+    def _flush(self) -> None:
+        """立即落盘（定时器回调；进程退出前也可主动调用）。"""
+        self._save_scheduled = False
+        if not self._dirty:
+            return
+        self._dirty = False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")

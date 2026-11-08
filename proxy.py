@@ -13,6 +13,7 @@ VPN 没连上时默认拒绝服务（fail-closed），避免流量裸奔；
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import random
 import secrets
@@ -136,6 +137,29 @@ def _dns_via_tun_tcp(host: str, device: str, dns_server: str,
                 pass
 
 
+# 进程内 DNS 缓存：健康检查与用户流量里的重复域名不再每次都经隧道
+# 现解析（弱隧道下一次解析可阻塞数秒，还占着连接线程）。
+# 成功缓存 180s；失败短缓存 10s 防解析风暴；连接失败时会主动失效。
+_DNS_CACHE: dict[tuple, tuple[float, str | None]] = {}
+_DNS_LOCK = threading.Lock()
+_DNS_TTL_OK = 180.0
+_DNS_TTL_FAIL = 10.0
+_DNS_MAX = 512
+
+
+def _dns_cache_key(host: str, device: str, dns_server: str,
+                   port: int) -> tuple:
+    return (host.lower(), device, dns_server, port)
+
+
+def invalidate_dns(host: str, device: str, dns_server: str = "8.8.8.8",
+                   port: int = 53) -> None:
+    """清掉某域名的缓存（连接失败时调用，下次连接重新解析）。"""
+    with _DNS_LOCK:
+        _DNS_CACHE.pop(_dns_cache_key(host, device, dns_server, port),
+                       None)
+
+
 def dns_via_tun(host: str, device: str, dns_server: str = "8.8.8.8",
                 timeout: float = 3.0, port: int = 53) -> str | None:
     """经 tun 设备向指定 DNS 服务器查 A 记录。
@@ -145,11 +169,23 @@ def dns_via_tun(host: str, device: str, dns_server: str = "8.8.8.8",
         return host  # 已经是 IP
     except OSError:
         pass
+    key = _dns_cache_key(host, device, dns_server, port)
+    now = time.time()
+    with _DNS_LOCK:
+        ent = _DNS_CACHE.get(key)
+        if ent is not None and ent[0] > now:
+            return ent[1]
     tx_id = random.getrandbits(16)
     ip = _dns_via_tun_udp(host, device, dns_server, tx_id, timeout, port)
-    if ip:
-        return ip
-    return _dns_via_tun_tcp(host, device, dns_server, tx_id, timeout, port)
+    if not ip:
+        ip = _dns_via_tun_tcp(host, device, dns_server, tx_id, timeout,
+                              port)
+    with _DNS_LOCK:
+        if len(_DNS_CACHE) >= _DNS_MAX:
+            _DNS_CACHE.clear()
+        _DNS_CACHE[key] = (time.time()
+                           + (_DNS_TTL_OK if ip else _DNS_TTL_FAIL), ip)
+    return ip
 
 
 def resolve(host: str, device: str | None,
@@ -193,6 +229,9 @@ def create_connection(address: tuple[str, int], device: str | None,
         return sock
     except OSError:
         sock.close()
+        # 缓存的 IP 可能已失效（CDN 轮换/节点变更），清掉让下次重解析
+        if device:
+            invalidate_dns(host, device, dns_server)
         raise
 
 
@@ -252,7 +291,7 @@ def relay(client: socket.socket, upstream: socket.socket,
     socks = [client, upstream]
     while True:
         try:
-            readable, _, errored = select.select(socks, [], socks, 120)
+            readable, _, errored = select.select(socks, [], socks, 60)
         except (OSError, ValueError):
             return
         if errored or not readable:
@@ -342,8 +381,7 @@ def handle_http(client: socket.socket, first: bytes, ctx: "ProxyContext") -> Non
 
         if ctx.auth:
             user, pwd = _parse_basic_auth(lines[1:])
-            if not (user and secrets.compare_digest(user, ctx.auth[0])
-                    and verify_password(pwd, ctx.auth[1])):
+            if not (user and ctx.auth_ok(user, pwd or "")):
                 client.sendall(b"HTTP/1.1 407 Proxy Authentication Required\r\n"
                                b"Proxy-Authenticate: Basic realm=\"Yu-proxy\"\r\n"
                                b"Content-Length: 0\r\n\r\n")
@@ -443,8 +481,7 @@ def handle_socks5(client: socket.socket, ctx: "ProxyContext") -> None:
             user = _recv_exact(client, ulen).decode("utf-8", "replace")
             plen = _recv_exact(client, 1)[0]
             pwd = _recv_exact(client, plen).decode("utf-8", "replace")
-            if not (secrets.compare_digest(user, ctx.auth[0])
-                    and verify_password(pwd, ctx.auth[1])):
+            if not ctx.auth_ok(user, pwd):
                 client.sendall(b"\x01\x01")
                 return
             client.sendall(b"\x01\x00")
@@ -520,6 +557,11 @@ class ProxyContext:
         self.allow_ips = allow_ips or []
         self.log = log
         self.stats = TrafficStats()
+        # 代理认证结果短缓存：密码是 PBKDF2 哈希（10 万次迭代），
+        # 旧实现每个新连接都要重算一次，弱机上是纯 CPU 税。
+        # 只缓存成功结果 60 秒，key 为密码的 SHA256 指纹（不存明文）。
+        self._auth_lock = threading.Lock()
+        self._auth_cache: dict[str, float] = {}
         # 失败日志限频：同一条失败 window 秒内只记一次，防刷屏
         self._fail_lock = threading.Lock()
         self._fail_seen: dict[str, tuple[float, int]] = {}
@@ -533,6 +575,26 @@ class ProxyContext:
                 self._allow_nets.append(ipaddress.ip_network(entry, strict=False))
             except ValueError:
                 self.log(f"[proxy] 白名单条目无效已忽略: {entry}")
+
+    def auth_ok(self, user: str, pwd: str) -> bool:
+        """校验代理账号密码（带 60 秒成功缓存，见 __init__ 注释）。"""
+        if not self.auth:
+            return True
+        if not user or not secrets.compare_digest(user, self.auth[0]):
+            return False
+        fp = hashlib.sha256((pwd or "").encode()).hexdigest()
+        now = time.time()
+        with self._auth_lock:
+            exp = self._auth_cache.get(fp)
+            if exp is not None and exp > now:
+                return True
+        if not verify_password(pwd, self.auth[1]):
+            return False
+        with self._auth_lock:
+            if len(self._auth_cache) > 256:
+                self._auth_cache.clear()
+            self._auth_cache[fp] = now + 60
+        return True
 
     # 本机回环永远放行：健康检查等本机服务走 127.0.0.1/::1，
     # 不能被来源白名单误杀（否则看门狗误判隧道死亡无限切换）
@@ -608,7 +670,7 @@ class ProxyServer:
     """HTTP/CONNECT + SOCKS5 二合一代理。"""
 
     def __init__(self, bind: str, port: int, ctx: ProxyContext,
-                 max_connections: int = 256):
+                 max_connections: int = 128):
         self.bind = bind
         self.port = port
         self.ctx = ctx

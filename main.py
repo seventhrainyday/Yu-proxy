@@ -20,6 +20,7 @@ import argparse
 import base64
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import secrets
 import re
@@ -48,7 +49,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.78"
+VERSION = "1.3.79"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -89,7 +90,7 @@ def default_config() -> dict:
             "device_id": "",
         },
         "probe": {
-            "threads": 20,
+            "threads": 8,
             "full_check_interval_h": 6,
             "expire_hours": 72,
         },
@@ -271,6 +272,31 @@ def _summarize_error(exc: Exception) -> str:
     return "连接失败"
 
 
+def _read_tail_text(path: Path, max_bytes: int = 262144) -> str:
+    """只读文件尾部（最多 max_bytes），供日志查看用。
+    旧实现整文件 read_text，日志涨大后看一次日志就全量读进内存。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+        text = data.decode("utf-8", errors="replace")
+        if size > max_bytes:
+            nl = text.find("\n")
+            if nl >= 0:
+                text = text[nl + 1:]  # 丢掉被截断的半行
+        return text
+    except Exception:
+        return ""
+
+
+# 自定义节点缓存：按 (文件名, mtime, 大小) 签名判新鲜。
+# _all_servers 在面板状态接口里每秒级被调用，旧实现每次都把
+# custom/*.ovpn 全部读盘 + base64 + sha1 一遍。
+_CUSTOM_NODES_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
+
+
 def load_custom_nodes(data_dir: str | Path) -> list[dict]:
     """读取 data_dir/custom/ 下的 *.ovpn，拼成统一调度池的节点。"""
     import hashlib
@@ -278,7 +304,17 @@ def load_custom_nodes(data_dir: str | Path) -> list[dict]:
     cdir = Path(data_dir) / "custom"
     if not cdir.is_dir():
         return out
-    for p in sorted(cdir.glob("*.ovpn")):
+    files = sorted(cdir.glob("*.ovpn"))
+    try:
+        sig = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size)
+                    for p in files)
+    except Exception:
+        sig = None
+    if sig is not None:
+        hit = _CUSTOM_NODES_CACHE.get(str(cdir))
+        if hit is not None and hit[0] == sig:
+            return list(hit[1])
+    for p in files:
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
             if "remote" not in text:
@@ -302,6 +338,8 @@ def load_custom_nodes(data_dir: str | Path) -> list[dict]:
             })
         except Exception:
             continue
+    if sig is not None:
+        _CUSTOM_NODES_CACHE[str(cdir)] = (sig, list(out))
     return out
 
 
@@ -347,10 +385,14 @@ class Daemon:
 
         # 节点统计与黑名单
         self.store = NodeStore(self.data_dir / "nodes.json")
+        self.store.prune()  # 启动时先修剪一次历史膨胀的统计记录
         self.iq_cache = ipquality.IPQualityCache(
             self.data_dir / "ip_quality.json")
         # 事件日志（连接/切换/故障），内存 + 落盘
         self._events: deque = deque(maxlen=200)
+        # 事件落盘改为脏标记 + 5 秒合并（见 _save_events），先于 _load_events 初始化
+        self._events_dirty = False
+        self._events_flush_scheduled = False
         self._load_events()
         # 网速采样：(t, up_bps, down_bps)，每 2 秒一个点，保留 30 分钟
         self._throughput: deque = deque(maxlen=900)
@@ -358,6 +400,7 @@ class Daemon:
         # 调度状态
         self._exit_ip = ""
         self._last_health: dict | None = None
+        self._last_health_at = 0.0
 
         # Kill-switch：阻断非隧道出站
         self.ks = KillSwitch(log=self.log)
@@ -452,6 +495,7 @@ class Daemon:
                 force_rotation_h=sch_cfg.get("force_rotation_h", 0),
                 health_check=self._health_check
                 if wd_cfg.get("health_check", True) else None,
+                health_interval=wd_cfg.get("health_interval", 60),
                 event_fn=self._watchdog_event,
                 log=self.log,
             )
@@ -472,6 +516,22 @@ class Daemon:
             pass
 
     def _save_events(self) -> None:
+        """标记脏并安排合并落盘：一次故障转移会连发多个事件，
+        旧实现每个事件都全量重写 events.json。5 秒内的事件只写一次；
+        内存中的事件列表即时可用，面板不受影响。"""
+        self._events_dirty = True
+        if self._events_flush_scheduled:
+            return
+        self._events_flush_scheduled = True
+        t = threading.Timer(5.0, self._flush_events)
+        t.daemon = True
+        t.start()
+
+    def _flush_events(self) -> None:
+        self._events_flush_scheduled = False
+        if not self._events_dirty:
+            return
+        self._events_dirty = False
         try:
             self._events_path().write_text(
                 json.dumps(list(self._events), ensure_ascii=False),
@@ -513,23 +573,37 @@ class Daemon:
         auth = (pc["user"], pc.get("pass", "")) if pc.get("user") else None
         return f"http://{host}:{self.proxy.port}", auth
 
-    def _health_check(self) -> dict:
+    def _health_check(self, force: bool = False) -> dict:
+        # 15 秒内已有结果时直接复用：连接成功后的补查线程与看门狗
+        # 首轮经常撞在一起，旧实现会把整套两层探测连跑两遍。
+        # 面板手动检测传 force=True，不受节流影响。
+        now = time.time()
+        if not force and self._last_health is not None \
+                and now - self._last_health_at < 15:
+            return self._last_health
         hc = HealthChecker(
             self._current_device, self._proxy_addr, log=self.log,
             risk_detect=self.cfg["watchdog"].get("risk_detect", False))
         r = hc.check()
         self._last_health = r
+        self._last_health_at = time.time()
         if r.get("exit_ip"):
             self._exit_ip = r["exit_ip"]
         return r
 
     # ----- 日志 -----
+    def _make_log_handler(self) -> logging.Handler:
+        """app.log 文件 handler：2MB 轮转、留 2 份备份。
+        旧实现是普通 FileHandler，日志永不截断、无限生长。"""
+        return RotatingFileHandler(
+            self.data_dir / "app.log", maxBytes=2 * 1024 * 1024,
+            backupCount=2, encoding="utf-8")
+
     def _setup_logging(self) -> None:
-        log_path = self.data_dir / "app.log"
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(message)s",
-            handlers=[logging.FileHandler(log_path, encoding="utf-8"),
+            handlers=[self._make_log_handler(),
                       logging.StreamHandler(sys.stdout)],
         )
         self._logger = logging.getLogger("Yu-proxy")
@@ -744,17 +818,20 @@ class Daemon:
                          name="probe-all").start()
         return {"ok": True, "msg": "全量探测已开始，结果稍后更新"}
 
-    def _run_probe_batch(self, servers: list[dict] | None = None) -> dict:
+    def _run_probe_batch(self, servers: list[dict] | None = None,
+                         partial: bool = False) -> dict:
         """批量探测节点有效性，更新 last_probe/last_probe_ok，执行过期删除。
 
         servers 为 None 时探测全部缓存节点。返回 {total, ok, expired}。
+        partial=True 时 servers 只是子集（刷新后的新增节点）：结果
+        合并回全量缓存，不做过期删除——否则子集会覆盖掉整个缓存。
         """
         if getattr(self, "_probing", False):
             return {"ok": False, "error": "已有探测任务在运行"}
         self._probing = True
         try:
             pcfg = self.cfg.get("probe", {})
-            threads = int(pcfg.get("threads", 20))
+            threads = int(pcfg.get("threads", 8))
             if servers is None:
                 servers, _ = vpngate.load_cache(self.data_dir)
             # 手动拉黑的不测；当前连接的不删（但照常探测更新状态）
@@ -775,13 +852,27 @@ class Daemon:
                 if r["ok"]:
                     s["last_probe_ok"] = now
                     ok_n += 1
-            # 过期删除（当前连接的节点永不删除）
-            before = len(servers)
-            servers = [s for s in vpngate.expire_nodes(
-                servers, float(pcfg.get("expire_hours", 72)))
-                if s["id"] != cur_id]
-            vpngate.save_cache(servers, self.data_dir)
-            expired = before - len(servers)
+            if partial:
+                # 子集探测：把结果合并回全量缓存，不做过期删除
+                full, _ = vpngate.load_cache(self.data_dir)
+                fby = {s["id"]: s for s in full}
+                for sid, r in results.items():
+                    fs = fby.get(sid)
+                    if fs is None:
+                        continue
+                    fs["last_probe"] = now
+                    if r["ok"]:
+                        fs["last_probe_ok"] = now
+                vpngate.save_cache(full, self.data_dir)
+                expired = 0
+            else:
+                # 过期删除（当前连接的节点永不删除）
+                before = len(servers)
+                servers = [s for s in vpngate.expire_nodes(
+                    servers, float(pcfg.get("expire_hours", 72)))
+                    if s["id"] != cur_id]
+                vpngate.save_cache(servers, self.data_dir)
+                expired = before - len(servers)
             self.log(f"[probe] 批量探测完成：{len(results)} 个，"
                      f"可用 {ok_n} 个，过期删除 {expired} 个")
             self._event("probe",
@@ -790,6 +881,11 @@ class Daemon:
             # 探测完成后，尝试上传可用节点到公共池（后台，节流）
             try:
                 self._pool_upload_working()
+            except Exception:
+                pass
+            # 顺手修剪节点统计（prune 此前从未被调用，nodes.json 只涨不缩）
+            try:
+                self.store.prune()
             except Exception:
                 pass
             return {"ok": True, "total": len(results), "usable": ok_n,
@@ -1120,7 +1216,7 @@ class Daemon:
         """手动触发健康检查（出口 IP 检测）。"""
         if not self.controller.is_connected():
             return {"ok": False, "error": "VPN 未连接"}
-        r = self._health_check()
+        r = self._health_check(force=True)
         return {"ok": True, "health": r, "exit_ip": self._exit_ip}
 
     # ---------- 黑名单 / 日志 / 配置 ----------
@@ -1139,8 +1235,7 @@ class Daemon:
                 if isinstance(h, logging.FileHandler):
                     self._logger.removeHandler(h)
                     h.close()
-            self._logger.addHandler(
-                logging.FileHandler(log_path, encoding="utf-8"))
+            self._logger.addHandler(self._make_log_handler())
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -1543,14 +1638,13 @@ class Daemon:
         lines: list[str] = []
         for name in ("app.log", "vpn.log"):
             p = self.data_dir / name
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace")
-                tail = text.splitlines()[-n // 2:]
-                if tail:
-                    lines.append(f"===== {name} =====")
-                    lines.extend(tail)
-            except Exception:
-                pass
+            text = _read_tail_text(p)
+            if not text:
+                continue
+            tail = text.splitlines()[-n // 2:]
+            if tail:
+                lines.append(f"===== {name} =====")
+                lines.extend(tail)
         return lines[-n:]
 
     # 账号密码字段：读取时脱敏，保存时空=保持原值、非空=哈希存储
@@ -1720,18 +1814,30 @@ class Daemon:
             if self._refetch_acc >= hours:
                 self._refetch_acc = 0
                 try:
+                    old_ids = {s["id"] for s in
+                               vpngate.load_cache(self.data_dir)[0]}
                     servers = vpngate.refresh(
                         self.data_dir, self.cfg["vpngate"]["api_urls"])
                     pool_n = self._pool_download_merge()
+                    if pool_n:
+                        servers, _ = vpngate.load_cache(self.data_dir)
                     self.log(f"[refetch] 节点列表已更新，共 {len(servers)} 个"
                              f"（公共池 +{pool_n}）")
                     self._event("refresh",
                                 f"节点列表已更新，共 {len(servers)} 个"
                                 f"（公共池 +{pool_n}）")
-                    # 拉取后立即批量验证有效性（后台线程，不阻塞）
-                    threading.Thread(
-                        target=self._run_probe_batch, daemon=True,
-                        name="probe-fetch").start()
+                    # 拉取后只验证新增节点（旧实现每小时对全部节点
+                    # 全量探测一轮，弱机上是周期性的 CPU 风暴；
+                    # 存量节点由 _probe_loop 每 full_check_interval_h
+                    # 全量复查，不会漏）
+                    new_servers = [s for s in servers
+                                   if s["id"] not in old_ids]
+                    if new_servers:
+                        threading.Thread(
+                            target=self._run_probe_batch,
+                            args=(new_servers,),
+                            kwargs={"partial": True},
+                            daemon=True, name="probe-fetch").start()
 
                 except Exception as e:
                     self.log(f"[refetch] 刷新失败: {e}")
@@ -1797,6 +1903,12 @@ class Daemon:
         self._stop_event.wait()
 
         self.log("正在停止…")
+        # 把延迟落盘的事件/节点统计刷出去，别丢最后一批
+        try:
+            self._flush_events()
+            self.store._flush()
+        except Exception:
+            pass
         if self.watchdog:
             self.watchdog.stop()
         self.exit_manager.stop_all()

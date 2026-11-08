@@ -27,6 +27,7 @@ import socket
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -231,11 +232,14 @@ def rdns_host(ip: str) -> str:
         return ""
 
 
-def enrich_rdns(infos: dict[str, dict], threads: int = 20,
+def enrich_rdns(infos: dict[str, dict], threads: int = 5,
                 timeout: float = 4.0, log=None) -> int:
     """对分数模糊（35-70）的 IP 补做反向 DNS，结果写入 info["rdns"]。
 
     返回补充成功的个数。慢查询会被跳过，不阻塞整体。
+    旧实现逐个 future 等 timeout：前面的慢查询会串行吃掉后面的等待，
+    且 gethostbyaddr 本身不受 timeout 控制。改为 as_completed + 全局
+    截止（timeout*10），到点就收工，剩余线程任其在后台结束。
     """
     todo = [ip for ip, info in infos.items()
             if 35 <= score_ip(info)[0] < 70]
@@ -244,14 +248,18 @@ def enrich_rdns(infos: dict[str, dict], threads: int = 20,
     done = 0
     with ThreadPoolExecutor(max_workers=min(threads, len(todo))) as ex:
         futs = {ex.submit(rdns_host, ip): ip for ip in todo}
-        for fut, ip in futs.items():
-            try:
-                host = fut.result(timeout=timeout)
-            except Exception:
-                continue
-            if host:
-                infos[ip]["rdns"] = host
-                done += 1
+        try:
+            for fut in as_completed(futs, timeout=timeout * 10):
+                ip = futs[fut]
+                try:
+                    host = fut.result()
+                except Exception:
+                    continue
+                if host:
+                    infos[ip]["rdns"] = host
+                    done += 1
+        except (TimeoutError, FuturesTimeoutError):
+            pass
     if log and done:
         log(f"[ipquality] 反向 DNS 补充 {done}/{len(todo)} 个")
     return done

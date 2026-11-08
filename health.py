@@ -82,13 +82,17 @@ RISK_KEYWORDS = (
 
 
 def http_probe(proxy: str, urls: list[str] | None = None,
-               timeout: float = 10,
+               timeout: float = 5,
                auth: tuple[str, str] | None = None,
-               risk_detect: bool = False) -> dict:
+               risk_detect: bool = False,
+               deadline: float = 20) -> dict:
     """经代理访问探测站。返回 {ok, ms, exit_ip, url, error, risk}。
 
     risk_detect=True 时：HTTP 403 或页面疑似验证码/风控时 risk=True，
     调用方可据此判定该出口 IP 已被风控、触发切换。
+
+    timeout 是单个站的超时；deadline 是整轮探测的总预算（秒），
+    避免弱机/慢隧道下逐个站串行超时把看门狗线程阻塞近一分钟。
     """
     urls = urls or PROBE_URLS
     proxy = _proxy_with_auth(proxy, auth)
@@ -96,13 +100,18 @@ def http_probe(proxy: str, urls: list[str] | None = None,
         {"http": proxy, "https": proxy})]
     opener = urllib.request.build_opener(*handlers)
     last_err = ""
+    t_start = time.monotonic()
     for url in urls:
+        remaining = deadline - (time.monotonic() - t_start)
+        if remaining <= 0:
+            break
+        eff_timeout = min(timeout, remaining)
         try:
             t0 = time.monotonic()
             req = urllib.request.Request(
                 url, headers={"User-Agent": "Yu-proxy-health/1.0"})
             try:
-                resp = opener.open(req, timeout=timeout)
+                resp = opener.open(req, timeout=eff_timeout)
                 status = resp.status
             except urllib.error.HTTPError as e:
                 # 403 等：读出状态码，用于风控判定

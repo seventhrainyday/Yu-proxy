@@ -86,7 +86,7 @@
     }
   },
   "probe": {
-    "threads": 20,
+    "threads": 8,
     "full_check_interval_h": 24,
     "expire_hours": 72
   },

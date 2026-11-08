@@ -64,6 +64,7 @@ class Exit:
                 interval=wd.get("interval", 30),
                 fail_threshold=wd.get("fail_threshold", 3),
                 max_retries=wd.get("max_retries", 5),
+                health_interval=wd.get("health_interval", 0),
                 event_fn=self._emit, log=self.log)
             self.watchdog.start()
         self._wanted_up = True

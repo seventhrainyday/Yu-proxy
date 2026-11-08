@@ -102,8 +102,14 @@ def parse_servers(csv_text: str) -> list[dict[str, Any]]:
         if not server["id"] or not server["ip"] or not server["config_b64"]:
             continue
         server["country_zh"] = COUNTRY_ZH.get(server["country"], server["country"])
-        server["proto"] = detect_proto(server["config_b64"])
-        server["remote"] = detect_remote(server["config_b64"], server["ip"])
+        # config_b64 只解码一次，proto 与 remote 共用解码结果
+        # （旧实现各解一次，全量列表数百节点时是纯浪费）
+        try:
+            _cfg_text = decode_config(server["config_b64"])
+        except Exception:
+            _cfg_text = ""
+        server["proto"] = _proto_from_text(_cfg_text)
+        server["remote"] = _remote_from_text(_cfg_text, server["ip"])
         servers.append(server)
     return servers
 
@@ -116,9 +122,15 @@ def decode_config(config_b64: str) -> str:
 def detect_proto(config_b64: str) -> str:
     """从 ovpn 配置里判断 tcp / udp。"""
     try:
-        cfg = decode_config(config_b64).lower()
+        cfg = decode_config(config_b64)
     except Exception:
         return "unknown"
+    return _proto_from_text(cfg)
+
+
+def _proto_from_text(cfg: str) -> str:
+    """已解码的 ovpn 文本 -> tcp / udp（供批量解析时复用解码结果）。"""
+    cfg = cfg.lower()
     for line in cfg.splitlines():
         s = line.strip()
         if not s or s.startswith(("#", ";")):
@@ -134,11 +146,16 @@ def detect_proto(config_b64: str) -> str:
 
 def detect_remote(config_b64: str, fallback_ip: str = "") -> dict[str, Any]:
     """解析 ovpn 里的 remote 行，返回 {host, port, proto}。"""
-    host, port, proto = fallback_ip, 0, "unknown"
     try:
         cfg = decode_config(config_b64)
     except Exception:
-        return {"host": host, "port": port, "proto": proto}
+        return {"host": fallback_ip, "port": 0, "proto": "unknown"}
+    return _remote_from_text(cfg, fallback_ip)
+
+
+def _remote_from_text(cfg: str, fallback_ip: str = "") -> dict[str, Any]:
+    """已解码的 ovpn 文本 -> {host, port, proto}。"""
+    host, port, proto = fallback_ip, 0, "unknown"
     for line in cfg.splitlines():
         s = line.strip()
         if not s or s.startswith(("#", ";")):
@@ -201,18 +218,42 @@ def cache_path(data_dir: str | Path) -> Path:
     return Path(data_dir) / CACHE_FILENAME
 
 
+# 进程内缓存：按文件 (mtime_ns, size) 判新鲜。面板状态接口每秒级调用
+# load_cache，旧实现每次都全量读盘 + 解析 MB 级 JSON，只为取个计数，
+# 弱机上是最大的常驻开销。返回浅拷贝，防调用方改动污染缓存本体。
+_CACHE_MEM: dict[str, tuple[tuple[int, int], list[dict[str, Any]], int]] = {}
+
+
+def _cache_sig(p: Path) -> tuple[int, int] | None:
+    try:
+        st = p.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except Exception:
+        return None
+
+
 def save_cache(servers: list[dict[str, Any]], data_dir: str | Path) -> None:
     p = cache_path(data_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"fetched_at": int(time.time()), "servers": servers}
+    fetched_at = int(time.time())
+    payload = {"fetched_at": fetched_at, "servers": servers}
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     tmp.replace(p)
+    sig = _cache_sig(p)
+    if sig is not None:
+        _CACHE_MEM[str(p)] = (sig, [dict(s) for s in servers], fetched_at)
 
 
 def load_cache(data_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
     """返回 (servers, fetched_at)。无缓存时返回 ([], 0)。"""
     p = cache_path(data_dir)
+    sig = _cache_sig(p)
+    if sig is None:
+        return [], 0
+    hit = _CACHE_MEM.get(str(p))
+    if hit is not None and hit[0] == sig:
+        return [dict(s) for s in hit[1]], hit[2]
     try:
         payload = json.loads(p.read_text(encoding="utf-8"))
         servers = payload.get("servers") or []
@@ -220,7 +261,9 @@ def load_cache(data_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
         for s in servers:
             if s.get("uptime_s", 0) > 365 * 86400:
                 s["uptime_s"] = s["uptime_s"] // 1000
-        return servers, int(payload.get("fetched_at") or 0)
+        fetched_at = int(payload.get("fetched_at") or 0)
+        _CACHE_MEM[str(p)] = (sig, [dict(s) for s in servers], fetched_at)
+        return servers, fetched_at
     except Exception:
         return [], 0
 
@@ -287,38 +330,45 @@ def expire_nodes(servers: list[dict[str, Any]],
     return kept
 
 
-def probe_one(server: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
-    """TCP 握手探测单个节点是否有效。返回 {ok, ms}。"""
+def probe_one(server: dict[str, Any], timeout: float = 3.0) -> dict[str, Any]:
+    """TCP 握手探测单个节点是否有效。返回 {ok, ms}。
+
+    只测节点真实端口：优先用 parse 时已存好的 server["remote"]，
+    不再像旧实现那样先白试一次 443、且每次探测都重新解码 config。
+    失效节点（批量探测里的多数）只付一次超时，不再付两次。
+    """
     ip = server.get("ip", "")
-    # 先试 443，不通则解析配置里的实际端口
-    ports = [443]
-    try:
-        r = detect_remote(server.get("config_b64", ""), ip)
-        if r.get("port") and r["port"] not in ports:
-            ports.append(r["port"])
-    except Exception:
-        pass
-    host = ip
-    for port in ports:
+    remote = server.get("remote") or {}
+    port = remote.get("port") or 0
+    if not port:
         try:
-            t0 = time.monotonic()
-            with socket.create_connection((host, port), timeout=timeout):
-                pass
-            return {"ok": True, "ms": round((time.monotonic() - t0) * 1000, 1)}
+            port = detect_remote(server.get("config_b64", ""), ip) \
+                .get("port") or 0
         except Exception:
-            continue
-    return {"ok": False, "ms": None}
+            port = 0
+    if not port:
+        port = 443
+    host = ip or remote.get("host") or ""
+    if not host:
+        return {"ok": False, "ms": None}
+    try:
+        t0 = time.monotonic()
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            pass
+        return {"ok": True, "ms": round((time.monotonic() - t0) * 1000, 1)}
+    except Exception:
+        return {"ok": False, "ms": None}
 
 
-def probe_batch(servers: list[dict[str, Any]], threads: int = 20,
-                timeout: float = 5.0,
+def probe_batch(servers: list[dict[str, Any]], threads: int = 8,
+                timeout: float = 3.0,
                 skip: Callable[[dict[str, Any]], bool] | None = None
                 ) -> dict[str, dict[str, Any]]:
     """多线程批量探测节点有效性。返回 {id: {ok, ms}}。
 
     skip(server) 返回 True 则跳过该节点（如手动拉黑的不测）。
     """
-    threads = max(1, min(100, int(threads or 20)))
+    threads = max(1, min(100, int(threads or 8)))
     targets = [s for s in servers if not (skip and skip(s))]
     results: dict[str, dict[str, Any]] = {}
     if not targets:

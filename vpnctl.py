@@ -25,7 +25,8 @@ from vpngate import decode_config
 
 SO_BINDTODEVICE = 25  # Linux socket 选项，把 socket 绑到指定网卡
 SUCCESS_MARK = "Initialization Sequence Completed"
-START_TIMEOUT = 60  # 等隧道建立的最长秒数
+START_TIMEOUT = 30  # 等隧道建立的最长秒数（VPNGate 节点正常 10-20s 出结果，
+                    # 60s 多为已死节点或本机被冻结，白等只拖慢故障转移）
 
 LogFn = Callable[[str], None]
 
@@ -231,20 +232,30 @@ class VPNController:
 
     def _wait_success(self, log_path: Path,
                       timeout: float, proc) -> bool:
-        """等待 openvpn 日志出现成功标记。不持有锁，可被 stop() 中断。"""
+        """等待 openvpn 日志出现成功标记。不持有锁，可被 stop() 中断。
+
+        增量读取：只读上次偏移之后的新内容，不再每 0.5 秒全量读文件。
+        """
         deadline = time.time() + timeout
+        offset = 0
+        buf = ""
         while time.time() < deadline:
             if proc is None or proc.poll() is not None:
                 self.log("[vpn] openvpn 进程已退出 "
                          f"(code={proc.poll() if proc else '?'})")
                 return False
             try:
-                text = log_path.read_text(encoding="utf-8",
-                                          errors="replace")
+                with open(log_path, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    f.seek(offset)
+                    chunk = f.read()
+                    offset = f.tell()
             except Exception:
-                text = ""
-            if SUCCESS_MARK in text:
-                return True
+                chunk = ""
+            if chunk:
+                buf = (buf + chunk)[-8192:]
+                if SUCCESS_MARK in buf:
+                    return True
             time.sleep(0.5)
         return False
 
@@ -297,6 +308,7 @@ class Watchdog(threading.Thread):
                  rotate_interval: float = 1800.0,
                  force_rotation_h: float = 0,
                  health_check: Callable[[], dict] | None = None,
+                 health_interval: float = 0,
                  event_fn: Callable[..., None] | None = None,
                  log: LogFn | None = None):
         super().__init__(daemon=True, name="vpn-watchdog")
@@ -310,10 +322,19 @@ class Watchdog(threading.Thread):
         self.rotate_interval = rotate_interval
         self.force_rotation_h = force_rotation_h
         self.health_check = health_check
+        # 完整健康检查的最小间隔（秒）。0 = 每个 tick 都查（旧行为）。
+        # interval 是 tick 周期，health_interval 决定两层探测的真实频率，
+        # 两者解耦：tick 仍可勤（管轮换/存活），重探测不必跟着勤。
+        self.health_interval = max(0.0, float(health_interval or 0))
+        self._last_health_at = 0.0
         self.event_fn = event_fn
         self.log: LogFn = log or _default_log
         self._stop_event = threading.Event()
         self._fails = 0
+        # 重连退避：整轮切换全失败后，下一轮等待随失败轮次指数增长
+        # （60→120→240→300 封顶），成功即清零。手动连接不受影响。
+        self._fail_rounds = 0
+        self._backoff_until = 0.0
         self.paused = False
 
     def stop(self) -> None:
@@ -338,6 +359,8 @@ class Watchdog(threading.Thread):
     def _tick(self) -> None:
         if self.paused:
             return
+        if time.time() < self._backoff_until:
+            return  # 退避中：整轮重连刚失败过，等一等再试（见 _switch）
         if not self.controller.is_connected():
             self._fails = 0
             # 未连接且用户期望连接时，自动重连（手动断开的不打扰）
@@ -351,7 +374,13 @@ class Watchdog(threading.Thread):
             self._switch(reason)
             return
 
-        # 健康检查
+        # 健康检查（按 health_interval 节流：不足间隔的 tick 直接跳过，
+        # 避免每个 tick 都做一整套经代理的两层探测）
+        now = time.time()
+        if self.health_interval > 0 and \
+                now - self._last_health_at < self.health_interval:
+            return
+        self._last_health_at = now
         ok, detail = self._health_ok()
         if ok:
             if self._fails:
@@ -390,7 +419,8 @@ class Watchdog(threading.Thread):
                             timeout=5.0)
         return ok, "" if ok else "隧道 TCP 不通"
 
-    def _switch(self, reason: str) -> None:
+    def _switch(self, reason: str) -> bool:
+        """尝试切换/重连。成功返回 True；整轮失败返回 False 并进入退避。"""
         cur = self.controller.current_server_id()
         self.log(f"[watchdog] {reason}，切换节点…")
         self._emit("switch", reason, cur)
@@ -407,12 +437,22 @@ class Watchdog(threading.Thread):
                 self.log("[watchdog] 切换成功")
                 self._emit("connect", f"已切换到 {nxt['id']}",
                            nxt["id"])
-                return
+                self._fail_rounds = 0
+                self._backoff_until = 0.0
+                return True
             except Exception as e:
                 self.log(f"[watchdog] 切换到 {nxt['id']} 失败: {e}")
                 self._emit("fail", f"{nxt['id']}: {e}", nxt["id"])
         self.log("[watchdog] 多次重连失败，等待下一轮")
         self._emit("fail", "多次重连失败", cur)
+        # 退避：连续失败轮次越多等得越久，给本机/网络留恢复窗口，
+        # 避免节点全灭时不间断地反复拉起 OpenVPN 空烧 CPU
+        self._fail_rounds += 1
+        delay = min(30 * (2 ** min(self._fail_rounds, 4)), 300)
+        self._backoff_until = time.time() + delay
+        self.log(f"[watchdog] 进入重连退避 {delay}s"
+                 f"（连续失败 {self._fail_rounds} 轮）")
+        return False
 
     # 兼容旧名
     def _failover(self) -> None:
