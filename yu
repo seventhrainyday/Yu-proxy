@@ -33,7 +33,11 @@ case "$1" in
     URLS="https://raw.githubusercontent.com/seventhrainyday/Yu-proxy/main/install-remote.sh https://cdn.jsdelivr.net/gh/seventhrainyday/Yu-proxy@main/install-remote.sh"
     for u in $URLS; do
       echo "尝试 $u"
-      if wget -qO- --timeout=30 "$u" 2>/dev/null | sh; then
+      # install-remote.sh 用了 pipefail 等 bash 特性，必须用 bash 执行；
+      # 用 sh（Debian 的 dash / Alpine 的 ash）会直接报 Illegal option
+      SHELL_BIN=sh
+      command -v bash >/dev/null 2>&1 && SHELL_BIN=bash
+      if wget -qO- --timeout=30 "$u" 2>/dev/null | $SHELL_BIN; then
         echo "更新完成"
         break
       fi
