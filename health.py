@@ -13,8 +13,12 @@ import time
 import urllib.request
 
 # 真实连通性探测站：一个要 204、一个回显出口 IP
+# 注：不要用 cdn.cloudflare.com —— 该名在公共 DNS 里没有任何 A/AAAA
+# 记录（NOERROR/NODATA，两大解析器与系统解析均实证），永远解析不出来，
+# 曾导致每轮健康检查先白白失败一次并刷屏日志。speed.cloudflare.com
+# 有 A 记录且同样提供 /cdn-cgi/trace（ip= 行格式一致）。
 PROBE_URLS = [
-    "http://cdn.cloudflare.com/cdn-cgi/trace",
+    "http://speed.cloudflare.com/cdn-cgi/trace",
     "http://api.ipify.org",
     "http://icanhazip.com",
     "http://ifconfig.me/ip",

@@ -86,10 +86,31 @@ def _parse_dns_a(resp: bytes, tx_id: int) -> str | None:
     return None
 
 
+# 哨兵：DNS 权威否定应答（NXDOMAIN，或 NOERROR 但无 A 记录）。
+# 这类应答换 TCP 再问一遍也是同样结果，没必要付第二次往返。
+_DNS_NEGATIVE = object()
+
+
+def _is_definitive_negative(resp: bytes, tx_id: int) -> bool:
+    """应答是否为权威否定：txid 吻合、QR=1、未截断，且
+    rcode=3（NXDOMAIN）或 rcode=0 但答案数为 0（NODATA）。"""
+    try:
+        if len(resp) < 12:
+            return False
+        rid, flags, _qd, an, _ns, _ar = struct.unpack(
+            ">HHHHHH", resp[:12])
+        if rid != tx_id or not (flags & 0x8000) or (flags & 0x0200):
+            return False
+        rcode = flags & 0x000F
+        return rcode == 3 or (rcode == 0 and an == 0)
+    except Exception:
+        return False
+
+
 def _dns_via_tun_udp(host: str, device: str, dns_server: str,
                    tx_id: int, timeout: float,
-                   port: int = 53) -> str | None:
-    """UDP 53 查询。"""
+                   port: int = 53):
+    """UDP 53 查询。返回 IP / None（无应答或解析失败）/ _DNS_NEGATIVE。"""
     sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -97,7 +118,12 @@ def _dns_via_tun_udp(host: str, device: str, dns_server: str,
         _bind_device(sock, device)
         sock.sendto(_build_dns_query(host, tx_id), (dns_server, port))
         resp, _ = sock.recvfrom(512)
-        return _parse_dns_a(resp, tx_id)
+        ip = _parse_dns_a(resp, tx_id)
+        if ip:
+            return ip
+        if _is_definitive_negative(resp, tx_id):
+            return _DNS_NEGATIVE
+        return None
     except OSError:
         return None
     finally:
@@ -176,8 +202,12 @@ def dns_via_tun(host: str, device: str, dns_server: str = "8.8.8.8",
         if ent is not None and ent[0] > now:
             return ent[1]
     tx_id = random.getrandbits(16)
-    ip = _dns_via_tun_udp(host, device, dns_server, tx_id, timeout, port)
-    if not ip:
+    res = _dns_via_tun_udp(host, device, dns_server, tx_id, timeout, port)
+    if res is _DNS_NEGATIVE:
+        ip = None  # 权威否定：跳过 TCP 兜底，直接记负缓存
+    elif res:
+        ip = res
+    else:
         ip = _dns_via_tun_tcp(host, device, dns_server, tx_id, timeout,
                               port)
     with _DNS_LOCK:
