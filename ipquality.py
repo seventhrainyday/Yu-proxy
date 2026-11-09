@@ -4,8 +4,8 @@
 ipquality.py — 节点 IP 质量检测（多信号综合评分制）
 
 信号源（全部免 key、纯标准库）：
-  1. ip-api.com 免费批量接口（45 请求/分钟）：proxy / hosting / mobile 标记
-     + isp / org / as 名称
+  1. ip-api.com 免费批量接口（实测批量端点限额 15 请求/分钟，见下）：
+     proxy / hosting / mobile 标记 + isp / org / as 名称
   2. ASN / 运营商名称启发式：机房关键词、住宅 ISP 关键词、知名云厂商 ASN
   3. 反向 DNS（PTR）：主机名模式（机房 vs 住宅动态池），只给分数模糊的 IP 做
 
@@ -33,9 +33,12 @@ from typing import Any
 
 BATCH_URL = "http://ip-api.com/batch?fields=status,proxy,hosting,mobile,isp,org,as,query"
 BATCH_SIZE = 15          # 免费版每批 15 个 IP
-# ip-api 免费限流 45 请求/分钟；单批 1 个请求，间隔 1.5 秒 ≈ 40 请求/分钟，留余量
-BATCH_INTERVAL = 1.5
-# 429 限流后的退避秒数（递增）
+# ip-api 批量端点实测限额是 15 请求/分钟（2026-11-08 真机：528 个 IP、
+# 36 批按 1.5 秒间隔发，十几批后连撞 429，退避重试把全程拖到约 3.5 分钟；
+# 旧注释写的 45/分钟是单查接口的口径，不适用于批量端点）。
+# 每批 1 个请求，间隔 4 秒 = 15 请求/分钟，刚好不触线。
+BATCH_INTERVAL = 4.0
+# 429 限流后的退避秒数（递增）；服务端回了 Retry-After 时优先用它
 RETRY_BACKOFF = (10, 20, 40)
 CACHE_FILENAME = "ip_quality.json"
 
@@ -168,20 +171,54 @@ TYPE_META = {
 }
 
 
-def _fetch_batch(ips: list[str], timeout: float = 15.0) -> dict[str, dict]:
-    """一批（≤15）IP 查询，返回 {ip: info}。"""
+def _fetch_batch(ips: list[str], timeout: float = 15.0
+                 ) -> tuple[dict[str, dict], dict[str, str]]:
+    """一批（≤15）IP 查询，返回 ({ip: info}, 响应头小写字典)。
+
+    响应头供调用方做配额感知节流：ip-api 回 X-RateLimit-Remaining，
+    429 时回 Retry-After。头缺失时返回空字典，调用方按固定间隔走。
+    """
     payload = json.dumps([{"query": ip} for ip in ips]).encode()
     req = urllib.request.Request(
         BATCH_URL, data=payload, method="POST",
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         items = json.loads(resp.read().decode("utf-8"))
+        headers: dict[str, str] = {}
+        try:
+            raw = resp.headers
+            if raw is not None:
+                headers = {k.lower(): v for k, v in raw.items()}
+        except Exception:
+            headers = {}
     out: dict[str, dict] = {}
     for item in items:
         q = item.get("query", "")
         if q:
             out[q] = item
-    return out
+    return out, headers
+
+
+def _retry_after(e: BaseException) -> float | None:
+    """429 响应头里的 Retry-After（秒），没有返回 None。"""
+    try:
+        import urllib.error
+        if isinstance(e, urllib.error.HTTPError) and e.headers is not None:
+            v = e.headers.get("Retry-After")
+            if v is not None:
+                return float(str(v).strip())
+    except Exception:
+        pass
+    return None
+
+
+def _remaining(headers: dict[str, str]) -> int | None:
+    """响应头里的 X-RateLimit-Remaining，没有返回 None。"""
+    try:
+        v = headers.get("x-ratelimit-remaining")
+        return int(v) if v is not None else None
+    except Exception:
+        return None
 
 
 def _is_rate_limit(e: BaseException) -> bool:
@@ -192,27 +229,45 @@ def _is_rate_limit(e: BaseException) -> bool:
 
 def batch_check(ips: list[str], threads: int = 1,
                 timeout: float = 15.0,
-                log=None) -> dict[str, dict]:
+                log=None, on_batch=None) -> dict[str, dict]:
     """批量查询 IP 质量。返回 {ip: info}，失败的 IP 不在结果中。
 
-    串行请求、每批间隔 BATCH_INTERVAL（≈40 请求/分钟，不触发 45/分钟限流）；
-    遇到 429 自动退避重试。threads 参数保留兼容，实际串行。
+    串行请求、每批间隔 BATCH_INTERVAL（4 秒 = 15 请求/分钟，不触发
+    批量端点实测限额）；遇到 429 优先按 Retry-After 等，缺失时按
+    RETRY_BACKOFF 退避重试。threads 参数保留兼容，实际串行。
+    on_batch(batch_infos, done_n, total_n)：每批成功后回调，供调用方
+    逐批落盘、让面板实时看到进度（旧行为是全查完才一次性写盘，
+    中途面板毫无变化，看着像没动静）。
     """
     ips = [ip for ip in dict.fromkeys(ips) if ip]  # 去重去空
     if not ips:
         return {}
     batches = [ips[i:i + BATCH_SIZE] for i in range(0, len(ips), BATCH_SIZE)]
     results: dict[str, dict] = {}
+    done_n = 0
     for i, b in enumerate(batches):
         for attempt in range(len(RETRY_BACKOFF) + 1):
             try:
-                results.update(_fetch_batch(b, timeout))
+                batch, headers = _fetch_batch(b, timeout)
+                results.update(batch)
+                done_n += len(b)
+                if on_batch is not None:
+                    on_batch(batch, done_n, len(ips))
+                # 配额已用完：等一分钟再发下一批，别顶着 429 硬撞
+                if _remaining(headers) is not None \
+                        and _remaining(headers) <= 0 \
+                        and i + 1 < len(batches):
+                    if log:
+                        log("[ipquality] 本分钟配额已用完，等 60 秒再继续…")
+                    time.sleep(60)
                 break
             except Exception as e:
                 if _is_rate_limit(e) and attempt < len(RETRY_BACKOFF):
-                    wait = RETRY_BACKOFF[attempt]
+                    wait = _retry_after(e)
+                    if wait is None:
+                        wait = float(RETRY_BACKOFF[attempt])
                     if log:
-                        log(f"[ipquality] 触发限流，{wait} 秒后重试 "
+                        log(f"[ipquality] 触发限流，{wait:g} 秒后重试 "
                             f"({attempt + 1}/{len(RETRY_BACKOFF)})…")
                     time.sleep(wait)
                     continue

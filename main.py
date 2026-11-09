@@ -49,7 +49,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.80"
+VERSION = "1.3.81"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -913,7 +913,13 @@ class Daemon:
             if not todo:
                 return {"ok": True, "checked": 0, "cached": len(ips)}
             self.log(f"[ipquality] 开始检测 {len(todo)} 个 IP…")
-            infos = ipquality.batch_check(todo, log=self.log)
+            # 每批查完立刻落盘：面板刷新就能看到已出的徽章，不用等全程跑完
+            def _on_batch(batch_infos, done_n, total_n):
+                self.iq_cache.update(batch_infos)
+                self.log(f"[ipquality] 进度：{done_n}/{total_n} 个已查，"
+                         f"面板刷新可见")
+            infos = ipquality.batch_check(todo, log=self.log,
+                                          on_batch=_on_batch)
             # 分数模糊的 IP 用反向 DNS 辅助判断
             try:
                 ipquality.enrich_rdns(infos, log=self.log)

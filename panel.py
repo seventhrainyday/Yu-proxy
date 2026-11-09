@@ -1084,7 +1084,7 @@ async function probeAll() {
   } catch(e) { toast('失败：' + e.message, 'err'); }
 }
 async function ipQualityCheck() {
-  if (!confirm('批量检测全部节点 IP 质量？（约需十几秒，后台执行）')) return;
+  if (!confirm('批量检测全部节点 IP 质量？（约需 2–3 分钟，后台执行；每批查完就保存，刷新节点页能实时看到已出的徽章）')) return;
   try {
     const r = await api('/api/ipquality', 'POST', {});
     if (!r.ok) throw new Error(r.error || '启动失败');
