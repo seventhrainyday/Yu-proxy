@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gc
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -49,7 +50,7 @@ from proxy import ProxyServer, ProxyContext
 from panel import PanelServer
 from collections import deque
 
-VERSION = "1.3.81"
+VERSION = "1.3.82"
 DEFAULT_CONFIG_PATH = "/etc/Yu-proxy/config.json"
 
 
@@ -341,6 +342,22 @@ def load_custom_nodes(data_dir: str | Path) -> list[dict]:
     if sig is not None:
         _CUSTOM_NODES_CACHE[str(cdir)] = (sig, list(out))
     return out
+
+
+def release_memory() -> None:
+    """把大批量任务释放的对象内存归还操作系统。
+
+    Python 分配器释放对象后通常不把空闲页还给 OS，进程 RSS 会停在
+    历史峰值（弱机上表现为常驻几百 MB、冷页被挤进 swap）。刷新 /
+    全量探测 / IP 质量检测这类周期性大活结束后主动 gc + malloc_trim
+    可把空闲页归还（malloc_trim 仅 glibc 有效，其余平台静默跳过）。
+    """
+    try:
+        gc.collect()
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 
 # ---------------- 守护进程 ----------------
@@ -892,6 +909,7 @@ class Daemon:
                     "expired": expired}
         finally:
             self._probing = False
+            release_memory()
 
     def _run_ipquality_check(self, ips: list[str] | None = None) -> dict:
         """批量检测 IP 质量（后台线程调用）。ips 为 None 时检测全部缓存节点。"""
@@ -934,6 +952,7 @@ class Daemon:
             return {"ok": True, "checked": ok_n, "cached": len(ips) - len(todo)}
         finally:
             self._iq_checking = False
+            release_memory()
 
     def _hook_ipquality(self, body: dict | None) -> dict:
         """手动触发 IP 质量检测（后台执行）。body 可含 {ip} 只查单个。"""
@@ -1844,6 +1863,7 @@ class Daemon:
                             args=(new_servers,),
                             kwargs={"partial": True},
                             daemon=True, name="probe-fetch").start()
+                    release_memory()
 
                 except Exception as e:
                     self.log(f"[refetch] 刷新失败: {e}")

@@ -232,7 +232,42 @@ def _cache_sig(p: Path) -> tuple[int, int] | None:
         return None
 
 
+# 节点缓存硬上限：VPNGate 官方活列表只有约 100-300 个节点，而 refresh 是
+# 累积合并、只靠探测路径的过期清理缩容，缓存会无限膨胀（实测某机累积
+# 1410 条 / 19.5MB）。整个数据集被 _CACHE_MEM 常驻内存，每次刷新还要
+# 全量解析、合并、序列化，弱机上把进程峰值内存顶到 300MB+ 且不回落。
+# save_cache 是所有写缓存路径的唯一出口，在这里强制修剪：custom（手动
+# 导入）节点永远保留，其余按新鲜度保留最新 MAX_CACHE_SERVERS 个。
+MAX_CACHE_SERVERS = 500
+
+
+def _freshness(s: dict[str, Any]) -> float:
+    return max(s.get("last_probe_ok") or 0,
+               s.get("last_seen") or 0,
+               s.get("first_seen") or 0)
+
+
+def prune_servers(servers: list[dict[str, Any]],
+                  max_keep: int = MAX_CACHE_SERVERS
+                  ) -> list[dict[str, Any]]:
+    """把节点列表修剪到 max_keep 个（custom 除外），保留最新鲜的。
+
+    保持原有相对顺序；数量未超限时原样返回。
+    """
+    if len(servers) <= max_keep:
+        return servers
+    custom = [s for s in servers if s.get("custom")]
+    rest = [s for s in servers if not s.get("custom")]
+    room = max(0, max_keep - len(custom))
+    if len(rest) > room:
+        rest = sorted(rest, key=_freshness, reverse=True)[:room]
+    keep = {id(s) for s in custom}
+    keep.update(id(s) for s in rest)
+    return [s for s in servers if id(s) in keep]
+
+
 def save_cache(servers: list[dict[str, Any]], data_dir: str | Path) -> None:
+    servers = prune_servers(servers)
     p = cache_path(data_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     fetched_at = int(time.time())
@@ -281,7 +316,8 @@ def refresh(data_dir: str | Path,
     for url in urls:
         try:
             new_servers = parse_servers(fetch_csv(url))
-            merged = merge_servers(load_cache(data_dir)[0], new_servers)
+            merged = prune_servers(
+                merge_servers(load_cache(data_dir)[0], new_servers))
             save_cache(merged, data_dir)
             return merged
         except Exception as e:
